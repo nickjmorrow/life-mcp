@@ -21,11 +21,17 @@ class FakeCli:
             3: ["Capital of France?", "Geo", later.to_logseq(), later.due],
         }
         self.children = {1: [["An append-only sequence of records", "a0"]], 2: [["A balanced tree of pages", "a0"], ["used by most databases", "a1"]]}
+        # DDIA: book > ch 5 - replication > flashcards > card 1; book > ch 50 - extra > flashcards > card 2
+        self.tree = [[10, 100, "book"], [11, 10, "ch 5 - replication"], [12, 11, "flashcards"], [1, 12, "What is a log?"],
+                     [13, 10, "ch 50 - extra"], [14, 13, "flashcards"], [2, 14, "What is a B-tree?"],
+                     [3, 200, "Capital of France?"]]
         self.writes = []
 
     async def __call__(self, *args, json_out=False):
         if args[0] == "query":
             q = next(a for a in args if a.startswith("--query="))
+            if ":find ?b ?parent ?title" in q:
+                return {"result": self.tree}
             if ":in $ ?parent" in q:
                 pid = int(re.search(r"--inputs=\[(\d+)\]", " ".join(args)).group(1))
                 return {"result": self.children.get(pid, [])}
@@ -84,3 +90,26 @@ def test_rate_writes_logseq_fsrs_properties():
 def test_status_counts_per_page():
     out = call(cards_mcp.build(FakeCli(), clock=lambda: NOW), "cards_status")
     assert out.startswith("1 due now, 1 new, 1 scheduled later.") and "- DDIA: 1 due, 1 new, 0 later" in out
+
+
+def test_chapter_filter():
+    cli = FakeCli()
+    mcp = cards_mcp.build(cli, clock=lambda: NOW)
+    for spoken in ("ch 5", "Chapter 5", "5", "ch.5", "replication"):
+        out = call(mcp, "cards_next", page="DDIA", chapter=spoken)
+        assert "[1] What is a log?" in out and "DDIA › ch 5 - replication" in out, spoken
+    cli.cards[1][3] = NOW + fsrs.DAY  # ch 5 has nothing due or new now; ch 50's new card must not leak in
+    assert "Nothing to review" in call(mcp, "cards_next", chapter="ch 5")
+    assert "[2]" in call(mcp, "cards_next", chapter="ch 50")
+
+
+def test_unknown_chapter_lists_chapters():
+    with pytest.raises(Exception, match=r"Chapters: ch 5 - replication, ch 50 - extra"):
+        call(cards_mcp.build(FakeCli(), clock=lambda: NOW), "cards_next", page="DDIA", chapter="ch 9")
+
+
+def test_status_per_chapter():
+    out = call(cards_mcp.build(FakeCli(), clock=lambda: NOW), "cards_status", page="DDIA")
+    assert out.splitlines()[1:] == ["- DDIA: 1 due, 1 new, 0 later",
+                                    "  - DDIA › ch 5 - replication: 1 due, 0 new, 0 later",
+                                    "  - DDIA › ch 50 - extra: 0 due, 1 new, 0 later"]

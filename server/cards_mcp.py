@@ -10,6 +10,7 @@ cards_rate records again / hard / good / easy and reschedules the card.
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Annotated, Literal
 
@@ -25,6 +26,10 @@ CARDS_QUERY = """[:find ?b ?title ?page ?state ?due
         [(missing? $ ?b :logseq.property/deleted-at)] [(missing? $ ?p :logseq.property/deleted-at)]
         [(get-else $ ?b :logseq.property.fsrs/state "") ?state]
         [(get-else $ ?b :logseq.property.fsrs/due 0) ?due]]"""
+# Every block on a page that has cards, with its parent: enough to walk a card up to its chapter heading.
+TREE_QUERY = """[:find ?b ?parent ?title
+ :where [?t :db/ident :logseq.class/Card] [?c :block/tags ?t] [?c :block/page ?p]
+        [?b :block/page ?p] [?b :block/parent ?parent] [?b :block/title ?title]]"""
 CHILDREN_QUERY = """[:find ?title ?order :in $ ?parent
  :where [?c :block/parent ?parent] [?c :block/title ?title] [?c :block/order ?order]]"""
 INSTRUCTIONS = (
@@ -34,10 +39,35 @@ INSTRUCTIONS = (
 READ = {"readOnlyHint": True}
 WRITE = {"readOnlyHint": False, "destructiveHint": False}
 Rating = Literal["again", "hard", "good", "easy"]
+PageArg = Annotated[str | None, Field(description="Only this page's cards (e.g. a book)")]
+ChapterArg = Annotated[str | None, Field(
+    description="Only cards under this chapter or heading: 'ch 5' (or 'chapter 5', '5') matches the heading 'ch 5 - …';"
+                " other text matches any heading containing it, e.g. 'replication'")]
 
 
 def now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _norm(text: str) -> str:
+    """'Chapter 5', 'ch.5', 'CH 5 - Replication' → 'ch 5…', so spoken and written chapter names compare equal."""
+    text = re.sub(r"\bchapter\b", "ch", text.strip().lower())
+    text = re.sub(r"\bch\.?\s*(\d+)", r"ch \1", text)
+    return re.sub(r"\s+", " ", text)
+
+
+def _is_chapter(title: str) -> bool:
+    return re.match(r"ch \d+(?!\d)", _norm(title)) is not None
+
+
+def _matches(title: str, want: str) -> bool:
+    """'ch 5' (or '5') matches a heading starting 'ch 5' but not 'ch 50'; any other text matches a heading containing it."""
+    t, w = _norm(title), _norm(want)
+    if w.isdigit():
+        w = f"ch {w}"
+    if re.fullmatch(r"ch \d+", w):
+        return re.match(re.escape(w) + r"(?!\d)", t) is not None
+    return w in t
 
 
 def _edn(value) -> str:
@@ -51,15 +81,38 @@ class Deck:
     def __init__(self, cli, clock=now_ms):
         self.cli, self.clock = cli, clock
 
-    async def cards(self, page: str | None = None) -> list[dict]:
+    async def cards(self, page: str | None = None, chapter: str | None = None, with_chapters: bool = False) -> list[dict]:
         rows = (await self.cli("query", f"--query={CARDS_QUERY}", json_out=True))["result"]
-        cards = [{"id": b, "front": title, "page": pg, "card": fsrs.Card.from_logseq(st or None, due)}
+        cards = [{"id": b, "front": title, "page": pg, "chapter": None, "card": fsrs.Card.from_logseq(st or None, due)}
                  for b, title, pg, st, due in rows]
         if page:
             cards = [c for c in cards if c["page"].lower() == page.strip().lower()]
             if not cards:
                 raise ToolError(f"No flashcards on a page called {page!r}. Use cards_status to see the pages.")
+        if chapter or with_chapters:
+            await self._add_chapters(cards)
+        if chapter:
+            matched = [c for c in cards if any(_matches(h, chapter) for h in c["headings"])]
+            if not matched:
+                names = sorted({c["chapter"] for c in cards if c["chapter"]}, key=_chapter_key)
+                hint = f" Chapters: {', '.join(names)}." if names else ""
+                raise ToolError(f"No flashcards under a chapter or heading matching {chapter!r}.{hint}")
+            cards = matched
         return cards
+
+    async def _add_chapters(self, cards: list[dict]) -> None:
+        """Give each card its headings (every ancestor block's text, nearest first) and its chapter: the
+        nearest heading that starts 'ch N'."""
+        rows = (await self.cli("query", f"--query={TREE_QUERY}", json_out=True))["result"]
+        parent = {b: p for b, p, _ in rows}
+        title = {b: t for b, _, t in rows}
+        for c in cards:
+            heads, b = [], parent.get(c["id"])
+            while b in title and len(heads) < 50:
+                heads.append(title[b])
+                b = parent.get(b)
+            c["headings"] = heads
+            c["chapter"] = next((_short(h) for h in heads if _is_chapter(h)), None)
 
     def split(self, cards: list[dict]) -> tuple[list[dict], list[dict], list[dict]]:
         """(due now, new, later) — due ordered most overdue first, new in page order."""
@@ -88,35 +141,51 @@ class Deck:
         return c, new
 
 
+def _short(heading: str) -> str:
+    """A chapter heading's name without the notes after it: 'ch 5 - replication', not a paragraph."""
+    return heading.split("\n")[0][:60].strip()
+
+
+def _chapter_key(name: str):
+    m = re.match(r"ch (\d+)", _norm(name))
+    return (int(m.group(1)) if m else 10**6, name)
+
+
 def build(cli, clock=now_ms) -> FastMCP:
     mcp = FastMCP("Cards")
     deck = Deck(cli, clock)
 
     def card_line(c: dict, left: str) -> str:
-        return f"[{c['id']}] {c['front']}\n(from {c['page']}; {left})"
+        where = f"{c['page']} › {c['chapter']}" if c.get("chapter") else c["page"]
+        return f"[{c['id']}] {c['front']}\n(from {where}; {left})"
 
     @mcp.tool(annotations=READ)
-    async def cards_status(page: Annotated[str | None, Field(description="Only this page's cards")] = None) -> str:
-        """How many flashcards are due now and new, per page, and when the next one comes due."""
-        due, new, later = deck.split(await deck.cards(page))
-        pages: dict[str, list[int]] = {}
+    async def cards_status(page: PageArg = None, chapter: ChapterArg = None) -> str:
+        """How many flashcards are due now and new, per page (and per chapter when a page or chapter is
+        given), and when the next one comes due."""
+        due, new, later = deck.split(await deck.cards(page, chapter, with_chapters=bool(page)))
+        groups: dict[str, list[int]] = {}
         for bucket, i in ((due, 0), (new, 1), (later, 2)):
             for c in bucket:
-                pages.setdefault(c["page"], [0, 0, 0])[i] += 1
+                groups.setdefault(c["page"], [0, 0, 0])[i] += 1
+                if c["chapter"]:
+                    groups.setdefault(f"{c['page']} › {c['chapter']}", [0, 0, 0])[i] += 1
         lines = [f"{len(due)} due now, {len(new)} new, {len(later)} scheduled later."]
         if later and not due:
             lines.append(f"Next due {fsrs.describe_wait(later[0]['card'].due, deck.clock())}.")
-        lines += [f"- {p}: {d} due, {n} new, {l} later" for p, (d, n, l) in sorted(pages.items())]
+        order = sorted(groups, key=lambda g: (g.split(" › ")[0], _chapter_key(g.split(" › ")[1]) if " › " in g else (-1, "")))
+        lines += [f"{'  ' if ' › ' in g else ''}- {g}: {d} due, {n} new, {l} later" for g in order for d, n, l in [groups[g]]]
         return "\n".join(lines)
 
     @mcp.tool(annotations=READ)
     async def cards_next(
-        page: Annotated[str | None, Field(description="Only this page's cards (e.g. a book)")] = None,
+        page: PageArg = None,
+        chapter: ChapterArg = None,
         include_new: Annotated[bool, Field(description="Show a new card when nothing is due")] = True,
     ) -> str:
         """The next flashcard to review: ONLY its front and id. Read the front to Nicholas and wait for him to
         answer before calling cards_answer. Due cards come first, then new ones."""
-        due, new, later = deck.split(await deck.cards(page))
+        due, new, later = deck.split(await deck.cards(page, chapter))
         queue = due + (new if include_new else [])
         if not queue:
             nxt = f" Next due {fsrs.describe_wait(later[0]['card'].due, deck.clock())}." if later else ""

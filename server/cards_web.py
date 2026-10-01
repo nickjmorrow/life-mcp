@@ -48,7 +48,8 @@ def view(c: dict | None, due: list, new: list, later: list) -> dict:
     if not c:
         nxt = fsrs.describe_wait(later[0]["card"].due, deck.clock()) if later else None
         return {"card": None, "due": len(due), "new": len(new), "next": nxt}
-    return {"card": {"id": c["id"], "front": c["front"], "page": c["page"], "new": c["card"].state == "new"},
+    return {"card": {"id": c["id"], "front": c["front"], "page": c["page"], "chapter": c["chapter"],
+                     "new": c["card"].state == "new"},
             "due": len(due), "new": len(new)}
 
 
@@ -56,8 +57,9 @@ async def next_card(request: Request):
     if not allowed(request):
         return forbidden()
     page = request.query_params.get("page") or None
+    chapter = request.query_params.get("chapter") or None
     include_new = request.query_params.get("new", "1") != "0"
-    due, new, later = deck.split(await deck.cards(page))
+    due, new, later = deck.split(await deck.cards(page, chapter))
     queue = due + (new if include_new else [])
     return JSONResponse(view(queue[0] if queue else None, due, new, later))
 
@@ -82,12 +84,16 @@ async def rate(request: Request):
 async def pages(request: Request):
     if not allowed(request):
         return forbidden()
-    due, new, later = deck.split(await deck.cards())
-    counts: dict[str, list[int]] = {}
+    due, new, later = deck.split(await deck.cards(with_chapters=True))
+    counts: dict[tuple, list[int]] = {}
     for bucket, i in ((due, 0), (new, 1), (later, 2)):
         for c in bucket:
-            counts.setdefault(c["page"], [0, 0, 0])[i] += 1
-    return JSONResponse([{"page": p, "due": d, "new": n, "later": l} for p, (d, n, l) in sorted(counts.items())])
+            counts.setdefault((c["page"], None), [0, 0, 0])[i] += 1
+            if c["chapter"]:
+                counts.setdefault((c["page"], c["chapter"]), [0, 0, 0])[i] += 1
+    order = sorted(counts, key=lambda k: (k[0], cards_mcp._chapter_key(k[1]) if k[1] else (-1, "")))
+    return JSONResponse([{"page": p, "chapter": ch, "due": d, "new": n, "later": l}
+                         for p, ch in order for d, n, l in [counts[(p, ch)]]])
 
 
 async def index(request: Request):
@@ -132,12 +138,14 @@ async function api(path, opts = {}) { const r = await fetch(path, { ...opts, hea
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status); return r.json(); }
 function esc(s) { return s.replace(/[&<>]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;" }[c])); }
 async function loadPages() { try { for (const p of await api("/api/pages")) {
-  const o = document.createElement("option"); o.value = p.page; o.textContent = `${p.page} (${p.due} due, ${p.new} new)`; $("#page").append(o); } } catch (e) {} }
+  const o = document.createElement("option"); o.value = JSON.stringify([p.page, p.chapter || ""]);
+  o.textContent = `${p.chapter ? "\u00a0\u00a0" + p.chapter : p.page} (${p.due} due, ${p.new} new)`; $("#page").append(o); } } catch (e) {} }
 async function next() {
-  const data = await api("/api/next?page=" + encodeURIComponent($("#page").value));
+  const [page, chapter] = $("#page").value ? JSON.parse($("#page").value) : ["", ""];
+  const data = await api(`/api/next?page=${encodeURIComponent(page)}&chapter=${encodeURIComponent(chapter)}`);
   card = data.card;
   if (!card) { main.innerHTML = `<div class="done"><p>Nothing to review right now.</p>${data.next ? `<p>Next card due ${esc(data.next)}.</p>` : ""}</div>`; say("All done."); return; }
-  main.innerHTML = `<div class="meta">${esc(card.page)} · ${card.new ? "new card" : "review"} · ${data.due} due, ${data.new} new</div>
+  main.innerHTML = `<div class="meta">${esc(card.page)}${card.chapter ? " › " + esc(card.chapter) : ""} · ${card.new ? "new card" : "review"} · ${data.due} due, ${data.new} new</div>
     <div class="front">${esc(card.front)}</div><button class="primary" id="reveal">Reveal</button>`;
   $("#reveal").onclick = reveal; say(card.front);
 }

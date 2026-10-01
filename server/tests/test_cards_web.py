@@ -20,7 +20,7 @@ def test_review_loop(monkeypatch):
     assert c.get("/api/answer/1").json()["back"] == "An append-only sequence of records"
     r = c.post("/api/rate", json={"id": 1, "rating": "good"}, headers={"X-Cards": "1"})
     assert r.status_code == 200 and r.json()["next_review"] and cli.writes
-    pages = {p["page"]: p for p in c.get("/api/pages").json()}
+    pages = {p["page"]: p for p in c.get("/api/pages").json() if not p["chapter"]}
     assert pages["DDIA"]["due"] == 1 and pages["Geo"]["later"] == 1
 
 
@@ -46,3 +46,10 @@ def test_page_filter_and_empty(monkeypatch):
     c, _ = client(monkeypatch, cli)
     assert c.get("/api/next?page=Geo").json()["card"] is None
     assert c.get("/api/next?page=DDIA&new=1").json()["card"]["id"] == 2
+
+
+def test_chapter_filter_and_list(monkeypatch):
+    c, _ = client(monkeypatch)
+    assert c.get("/api/next?page=DDIA&chapter=ch%2050").json()["card"]["id"] == 2
+    rows = c.get("/api/pages").json()
+    assert [(r["page"], r["chapter"]) for r in rows][:3] == [("DDIA", None), ("DDIA", "ch 5 - replication"), ("DDIA", "ch 50 - extra")]
