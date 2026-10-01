@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Symlinked into ~/Library/LaunchAgents. No secrets here: cards-web.sh sources ~/.zshrc.local. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.nicholai.cards-web</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/nicholasmorrow/Projects/life-mcp/server/cards-web.sh</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>StandardOutPath</key>
+	<string>/Users/nicholasmorrow/Library/Logs/cards-web.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/nicholasmorrow/Library/Logs/cards-web.log</string>
+</dict>
+</plist>

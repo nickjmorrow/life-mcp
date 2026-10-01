@@ -1,0 +1,20 @@
+# The connector's dependencies, pinned, in one place for everything under server/ and hue/ (uv.lock pins
+# the rest). From server/: `uv run server.py`, `uv run pytest -q`; from hue/: `uv run --project ../server ...`.
+[project]
+name = "life-mcp-server"
+version = "0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastmcp==4.0.10",      # the MCP server
+    "httpx==0.28.1",        # Hue, Hevy, Eight Sleep, Apple Music
+    "pyatv==0.18.0",        # HomePods and the Apple TV
+    "pyyaml==6.0.3",        # skill frontmatter
+    "pyjwt[crypto]==2.15.1",  # Apple Music developer tokens
+    "pyliblzfse==0.4.1",    # Health Auto Export's compressed files
+]
+
+[dependency-groups]
+dev = ["pytest==9.1.1"]
+
+[tool.uv]
+package = false  # scripts, not an installable package

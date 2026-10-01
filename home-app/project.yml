@@ -1,0 +1,40 @@
+name: LifeHome
+options:
+  bundleIdPrefix: com.nicholai
+  deploymentTarget:
+    iOS: "18.0"
+targets:
+  LifeHome:
+    type: application
+    platform: iOS
+    supportedDestinations: [iOS, macCatalyst]  # registered as an iOS app: HomeKit isn't offered for macOS app IDs
+    sources: [Sources]
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: Life Home
+        NSHomeKitUsageDescription: "Life Home lets your Life connector see and control your Apple Home."
+        UILaunchScreen: {}
+        LSUIElement: true  # no Dock icon: a background helper
+    attributes:
+      SystemCapabilities:
+        com.apple.HomeKit:
+          enabled: 1
+    entitlements:
+      path: Sources/LifeHome.entitlements
+      properties:
+        com.apple.developer.homekit: true
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        com.apple.security.network.server: true  # the local API on 127.0.0.1:8767
+        # Read the secret the connector shares (~/.config/life-mcp/home-token) and nothing else outside
+        # the sandbox; see SharedToken in LocalServer.swift.
+        com.apple.security.temporary-exception.files.home-relative-path.read-only: ["/.config/life-mcp/home-token"]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nicholai.life.home
+        DERIVE_MACCATALYST_PRODUCT_BUNDLE_IDENTIFIER: NO  # the Mac build uses the iOS app ID (and its HomeKit)
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ${LIFE_MCP_APPLE_TEAM}  # his Apple developer team, from ~/.zshrc.local
+        SUPPORTS_MACCATALYST: YES
+        SWIFT_VERSION: "6.0"

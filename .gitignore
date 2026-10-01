@@ -1,0 +1,7 @@
+.DS_Store
+__pycache__/
+.backups/
+.superpowers/
+.mypy_cache/
+jobs/books-collections/.build/
+skills/synced/
