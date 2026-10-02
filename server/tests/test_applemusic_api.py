@@ -185,3 +185,13 @@ def test_sign_in_port_default_and_override(monkeypatch):
     assert importlib.reload(applemusic_signin).PORT == 8770
     monkeypatch.setenv("APPLEMUSIC_SIGNIN_PORT", "8799")
     assert importlib.reload(applemusic_signin).PORT == 8799
+
+
+def test_not_signed_in_names_this_mac(tmp_path, key, monkeypatch):
+    monkeypatch.setattr(am, "HOST", "Edgar")
+    c = client(tmp_path, key, lambda r: httpx.Response(200, json={}), signed_in=False)
+    with pytest.raises(AppleMusicError, match="Not signed in to Apple Music on Edgar"):
+        asyncio.run(c.recommendations())
+    c = client(tmp_path, key, lambda r: httpx.Response(403, json={"errors": []}))
+    with pytest.raises(AppleMusicError, match="sign-in on Edgar may have expired"):
+        asyncio.run(c.request("GET", "/v1/me/storefront"))

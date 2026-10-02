@@ -122,7 +122,7 @@ class AppleMusic:
         if personal or path.startswith("/v1/me"):
             u = self.user()
             if not u:
-                raise AppleMusicError(f"Not signed in to Apple Music yet: {SIGN_IN}.")
+                raise AppleMusicError(f"Not signed in to Apple Music on {HOST} yet: {SIGN_IN}.")
             headers["Music-User-Token"] = u["user_token"]
         async with httpx.AsyncClient(base_url=BASE, transport=self._transport, timeout=20) as client:
             try:
@@ -144,7 +144,7 @@ class AppleMusic:
         if r.status_code == 403:
             # Also what Apple sends for no subscription or a playlist the API may not edit.
             raise AppleMusicError("Apple Music refused that" + (f" ({detail})" if detail else "")
-                                  + f". If it keeps happening for everything, the sign-in may have expired: {SIGN_IN}.")
+                                  + f". If it keeps happening for everything, the sign-in on {HOST} may have expired: {SIGN_IN}.")
         if r.status_code == 429:
             raise AppleMusicError("Apple Music says too many requests; try again in a minute.")
         if r.status_code == 404:

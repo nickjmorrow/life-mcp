@@ -270,3 +270,29 @@ def test_add_catalog_not_synced_says_so(fakes):
     out = call("music_add_to_playlist", playlist="workout", songs=["1440111111"])
     assert "hasn't reached TestMac yet" in out and "Windowlicker" in out
     assert not [c for c in lib.calls if c[0] == "add"]
+
+
+def test_status_says_which_mac_needs_the_token(fakes, monkeypatch):
+    fakes[1].signed_in = False
+    monkeypatch.setattr(music_lib_mcp, "HOST", "Edgar")
+    out = call("music_status")
+    assert "not signed in on Edgar" in out and "secrets.py push-file" in out
+
+
+def test_versions_in_brackets_are_not_mixed_up(fakes):
+    lib, api, _ = fakes
+    api.catalog["1440333333"] = {"id": "1440333333", "type": "songs", "name": "Human Voice (Mixed)",
+                                 "artist": "Four Tet", "album": "Live", "year": "2025"}
+    api.catalog["1440444444"] = {"id": "1440444444", "type": "songs", "name": "Human Voice",
+                                 "artist": "Four Tet", "album": "Live", "year": "2025"}
+    lib.songs_.append(lib_song(30, "Human Voice", "Four Tet", album="Live", added="2026-10-01T00:00:00Z"))
+    lib.songs_.append(lib_song(31, "Human Voice (Mixed)", "Four Tet", album="Live", added="2026-10-02T00:00:00Z"))
+    call("music_add_to_playlist", playlist="workout", songs=["1440444444", "1440333333"])
+    assert lib.calls[-1] == ("add", "P1", ["000000000000001E", "000000000000001F"])
+
+
+def test_unknown_catalog_ids_are_reported(fakes):
+    lib, api, _ = fakes
+    _syncs(lib, api)
+    out = call("music_add_to_playlist", playlist="workout", songs=["1440111111", "99999999999"])
+    assert "Windowlicker" in out and "99999999999" in out and "not found" in out
