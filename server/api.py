@@ -47,12 +47,13 @@ async def target_args(page: str | None, parent_block_id: int | None, create_page
 
 def memory() -> memory_store.MemoryStore:
     """The shared memory: Markdown topic files in a local git repo, with the same guard the memory_* tools use.
-    Methods (all plain, none async): .topics(), .entries(topic), .render(topic), .search(word),
-    .save(text, topic, source, under=None, review=None, similar=None), .update(entry_id, text=None, remove=False,
-    review=None), .archive(entry_id, why), .move(entry_id, topic), .merge(keep_id, merge_id, text),
-    .split(topic, groups, about), .review_due(today) and .commit_files(files, message). Text that names a
-    connector tool, reads like a command or a rule for Claude, or holds a secret is refused with a ToolError;
-    every other refusal (an unknown topic, a full core, a bad date) is a memory_store.MemoryError_, a ValueError."""
+    Methods (all plain, none async): .topics(), .entries(topic), .render(topic), .size(topic) (characters of entries),
+    .search(word), .save(text, topic, source, under=None, review=None, similar=None), .update(entry_id, text=None,
+    remove=False, review=None), .archive(entry_id, why), .move(entry_id, topic), .merge(keep_id, merge_id, text),
+    .split(topic, groups, about), .review_due(today), .head() (the repo's HEAD sha), .last_commit(path) and
+    .commit_files(files, message). Text that names a connector tool, reads like a command or a rule for Claude, or holds
+    a secret is refused with a ToolError; every other refusal (an unknown topic, a full core, a bad date) is a
+    memory_store.MemoryError_, a ValueError."""
     return memory_mcp.store()
 
 

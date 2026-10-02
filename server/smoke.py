@@ -31,9 +31,17 @@ def check_memory():
     memory_mcp.store().topics()
 
 
+def check_proposals():
+    """The proposal tools can't send without their token, so check that its file is there and has something in it.
+    Nothing is posted: a health check must not leave a proposal on the approvals page."""
+    import proposals_mcp
+    proposals_mcp.read_token()
+
+
 # Groups checked without a tool call: what the check calls, and the function that does it.
 LOCAL_CHECKS = {
     "memory": ("store().topics()", check_memory),
+    "proposals": ("token file", check_proposals),
 }
 
 
@@ -41,7 +49,8 @@ _server = None
 
 
 def load_server():
-    """Import server.py and mount every tool group, as its __main__ does (without auth or HTTP)."""
+    """Import server.py and mount every tool group, as its __main__ does (without auth or HTTP). Like the real server,
+    the client's start writes server.TOOLS_FILE (the tool list: derived data, the same as the running server's)."""
     global _server
     if _server is None:
         import server  # imported late so the tests run without the Logseq app

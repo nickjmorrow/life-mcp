@@ -5,8 +5,11 @@ format claude.ai and Claude Code use; Claude Code reads the folder directly thro
 ~/.claude/skills). claude.ai has no copy: the connector's instructions carry a short index
 (each skill's `trigger` frontmatter line), and Claude calls skill_load to get the full text.
 
-Skill text is read fresh on every call, so edits are live at once. The index is built when
-the service starts, so a new skill or a changed trigger needs a restart.
+Skill text is read fresh on every call, so edits are live at once, and so is the index that memory_recall returns
+(context.py reads the skills from disk on each recall without a topic). Only what is built when the service starts
+needs a restart: the per-skill MCP prompts (a new skill, or a changed trigger, on the prompt menu), the instructions text
+the connector sends clients that read it, and the descriptions of tools that carry a skill (skill_tools.py: a change to
+flashcard-review or hevy).
 
 A skill can name a secret as {{VAR}} (only the names in SECRETS); skill_load fills it from
 the service's environment (~/.zshrc.local via run.sh), so the repo never holds the value.

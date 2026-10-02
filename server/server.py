@@ -1,6 +1,6 @@
 """The Life connector: Nicholas's Logseq graph (the tools below), plus every tool group in GROUPS
-(shared memory, skills, health, people, Hue, Eight Sleep, Reminders, Hevy, Music, the Apple TV and
-Apple Home), mounted by mount_all at the bottom.
+(shared memory, proposals, skills, health, people, Hue, Eight Sleep, Reminders, Hevy, Music, the Apple TV
+and Apple Home), mounted by mount_all at the bottom.
 
 claude.ai -> Tailscale Funnel (https://$PUBLIC_URL) -> this server on 127.0.0.1:8765
 -> `logseq` CLI -> the db-worker owned by the running Logseq app.
@@ -22,6 +22,8 @@ import importlib
 import json
 import os
 import sys
+import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
 
@@ -595,6 +597,24 @@ class ChatLog(Middleware):
         return await call_next(context)
 
 
+# claude.ai often finds a tool by searching and never calls memory_recall, so it never sees the user's rules and core facts.
+# A tool's description is the one thing it reads before calling the tool, so every tool's description ends with this.
+RECALL_REMINDER = (" If you haven't called memory_recall in this conversation, call it first: it returns the user's rules"
+                   " and core memory.")
+RECALL_EXEMPT = frozenset({"memory_recall", "memory_save", "memory_update"})  # the memory tools are that call or follow it
+
+
+class RecallReminder(Middleware):
+    """End every tool's description with RECALL_REMINDER, except the memory tools'. Each listing gets copies, so the
+    registered tools stay as written and listing again never stacks the sentence."""
+
+    async def on_list_tools(self, context: MiddlewareContext, call_next):
+        tools = await call_next(context)
+        return [t if t.name in RECALL_EXEMPT
+                else t.model_copy(update={"description": (t.description or "").rstrip() + RECALL_REMINDER})
+                for t in tools]
+
+
 def github_auth() -> GitHubProvider:
     if not ALLOWED_GITHUB_ID.isdigit():
         raise RuntimeError("LIFE_MCP_GITHUB_ID (the allowed GitHub user's numeric id) isn't set")
@@ -642,6 +662,7 @@ class Group:
 
 GROUPS: tuple[Group, ...] = (
     Group("memory", "memory_mcp", build=lambda m: m.build()),
+    Group("proposals", "proposals_mcp", build=lambda m: m.build()),
     Group("health", "health_mcp", build=lambda m: m.build()),
     Group("people", "people_mcp", build=lambda m: m.build(cli)),
     Group("cards", "cards_mcp", build=lambda m: m.build(cli)),
@@ -704,9 +725,58 @@ def mount(g: Group, target: FastMCP | None = None) -> bool:
     return True
 
 
+# Every tool name the server exposes, sorted, written when the server starts. The private harness's drift check reads
+# it to find a rule or a skill that names a tool that isn't there.
+TOOLS_FILE = Path.home() / "Library" / "Application Support" / "life-mcp" / "tools.json"
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Replace a file whole (600, in a 700 folder): a reader sees the old text or the new, never half."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".", suffix=".tmp")  # created 600
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+async def write_tool_list(target: FastMCP) -> list[str] | None:
+    """Save the name of every tool target exposes in TOOLS_FILE, and return them. If they can't be listed or saved this
+    logs a line and returns None: the connector doesn't depend on the file."""
+    try:
+        names = sorted({t.name for t in await target.list_tools(run_middleware=False)})
+        _write_private(TOOLS_FILE, json.dumps(names, indent=2) + "\n")
+    except Exception as e:
+        print(f"Tool list not written: {e!r}", file=sys.stderr)
+        return None
+    return names
+
+
+def tool_list_writer(target: FastMCP) -> FastMCP:
+    """A server with no tools whose start writes TOOLS_FILE for target. FastMCP starts a mounted server's lifespan when
+    the server it's mounted on starts, on that server's own event loop, and that is the one safe place to take the list:
+    the Eight Sleep tools come through a proxy that keeps its connection to the npm server on the loop that opened it, so
+    listing them on a loop of our own (asyncio.run inside mount_all) leaves the proxy failing with "Event loop is closed"
+    for as long as the server runs, and drops its tools from every later listing (checked on FastMCP 4.0.10). The write
+    is a background task, so a proxy that hangs can't hold up the server starting."""
+    @asynccontextmanager
+    async def lifespan(_server: FastMCP):
+        writing = asyncio.create_task(write_tool_list(target))
+        try:
+            yield {}
+        finally:
+            writing.cancel()
+            await asyncio.gather(writing, return_exceptions=True)
+    return FastMCP("Tool list", lifespan=lifespan)
+
+
 def mount_all(target: FastMCP | None = None, groups: tuple[Group, ...] = GROUPS) -> list[str]:
-    """Mount every group (returns the labels that loaded), then tell the memory guard every tool name
-    the server exposes, so memory can't be made to hold a command for any of them."""
+    """Mount every group (returns the labels that loaded), then tell the memory guard every tool name the server
+    exposes, so memory can't be made to hold a command for any of them, and arrange for TOOLS_FILE to be written when
+    the server starts."""
     target = target or mcp
     loaded = [g.label for g in groups if mount(g, target)]
 
@@ -717,6 +787,7 @@ def mount_all(target: FastMCP | None = None, groups: tuple[Group, ...] = GROUPS)
         memory_mcp.set_tool_source(names)  # listed on first use, inside the running server
     except Exception as e:
         print(f"Memory guard not given the tool names: {e!r}", file=sys.stderr)
+    target.mount(tool_list_writer(target))  # last, so that what it lists includes everything above
     return loaded
 
 
@@ -728,4 +799,5 @@ if __name__ == "__main__":
         mcp.auth = github_auth()
         mcp.add_middleware(OnlyMe())
         mcp.add_middleware(ChatLog())
+        mcp.add_middleware(RecallReminder())
         mcp.run(transport="http", host=HOST, port=PORT)

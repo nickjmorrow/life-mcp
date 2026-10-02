@@ -1,10 +1,12 @@
 # tests/test_smoke.py
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastmcp import FastMCP
 
 import memory_mcp
+import private
 import smoke
 import usage_log
 
@@ -70,7 +72,33 @@ def test_memory_check_fails_when_a_memory_file_is_broken(no_server, capsys):
     assert "FAIL  memory" in out and "home" in out
 
 
-def test_every_group_is_run_when_none_is_named(no_server, monkeypatch, capsys):
+@pytest.fixture
+def approvals_token(tmp_path, monkeypatch):
+    """The approvals service's token, as the private config names it (a temp file with a made-up token)."""
+    path = tmp_path / "propose-token"
+    path.write_text("tok-4f9a1c\n")
+    monkeypatch.setitem(private.CONFIG, "approvals", {"token_file": str(path)})
+    return path
+
+
+def test_proposals_check_passes_with_a_token_file_and_posts_nothing(no_server, approvals_token, monkeypatch, capsys):
+    def posted(*args, **kwargs):
+        raise AssertionError("the smoke check sent something to the approvals service")
+    monkeypatch.setattr(httpx, "AsyncClient", posted)  # a proposal left on the page by a health check would be noise
+    assert smoke.run(["proposals"]) == 0
+    out = capsys.readouterr().out
+    assert "ok    proposals    token file" in out
+    assert "tok-4f9a1c" not in out  # it says the file is there, never what's in it
+
+
+def test_proposals_check_fails_without_a_token_file(no_server, approvals_token, capsys):
+    approvals_token.unlink()
+    assert smoke.run(["proposals"]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL  proposals" in out and "isn't set up" in out
+
+
+def test_every_group_is_run_when_none_is_named(no_server, approvals_token, monkeypatch, capsys):
     ran = []
 
     async def call(client, tool, args):

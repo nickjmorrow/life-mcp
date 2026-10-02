@@ -16,9 +16,12 @@ import usage_log
 
 @pytest.fixture(autouse=True)
 def _usage_log_in_tmp(tmp_path, monkeypatch):
-    """Tests never write to the real connector usage log, the real memory folder or the real Life Home token."""
+    """Tests never write to the real connector usage log, the real memory folder, the real Life Home token or the real
+    tool list (a server that starts writes it, and any test that opens a client on a mounted server starts one)."""
     monkeypatch.setattr(usage_log, "PATH", tmp_path / "connector-usage.jsonl")
     import memory_mcp
     monkeypatch.setattr(memory_mcp, "MEMORY_DIR", tmp_path / "memory")
     import home_mcp
     monkeypatch.setattr(home_mcp, "TOKEN_PATH", tmp_path / "config" / "home-token")
+    import server
+    monkeypatch.setattr(server, "TOOLS_FILE", tmp_path / "tools.json")
