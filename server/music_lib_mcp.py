@@ -129,10 +129,10 @@ def _editable(p: dict) -> None:
         raise ToolError(f"'{p['name']}' is a smart playlist; Music fills it by its rules, so it can't be edited.")
 
 
-async def _into_library(wanted: list[dict]) -> tuple[list[str], list[dict]]:
-    """Library ids for catalog songs already added to his library, waiting up to SYNC_WAIT_S for iCloud
-    to bring them to this Mac. Returns (ids in order, catalog songs not there yet). Matched on name,
-    artist and album (another album is another version), newest copy first.
+async def _into_library(wanted: list[dict], wait: bool = True) -> list[dict | None]:
+    """The library copy of each catalog song (None if not on this Mac yet), waiting up to SYNC_WAIT_S
+    for iCloud to bring them here unless wait=False. Matched on name, artist and album (another album
+    is another version), newest copy first.
     Playlists go through the library because a playlist made by script stays local until it has a song."""
     def exact(name, artist, album):
         return (name or "").strip().lower(), (artist or "").strip().lower(), (album or "").strip().lower()
@@ -140,7 +140,7 @@ async def _into_library(wanted: list[dict]) -> tuple[list[str], list[dict]]:
     def loose(name, artist, album):
         return (*_key(name, artist), (album or "").strip().lower())
 
-    deadline = asyncio.get_running_loop().time() + SYNC_WAIT_S
+    deadline = asyncio.get_running_loop().time() + (SYNC_WAIT_S if wait else 0)
     while True:
         by_exact, by_loose = {}, {}
         for s in await lib().songs():       # newest copy wins; another album is another version
@@ -155,25 +155,66 @@ async def _into_library(wanted: list[dict]) -> tuple[list[str], list[dict]]:
         if all(hits) or asyncio.get_running_loop().time() >= deadline:
             break
         await asyncio.sleep(SYNC_POLL_S)
-    return [h["id"] for h in hits if h], [c for c, h in zip(wanted, hits) if not h]
+    return hits
 
 
-async def _catalog_songs(ids: list[str]) -> tuple[list[str], list[dict], list[dict], list[str]]:
-    """Add catalog songs to his library and wait for them:
-    (library ids, songs added, not there yet, ids Apple Music doesn't know)."""
+async def _catalog_songs(ids: list[str]) -> dict:
+    """Catalog songs into his library (only the ones not there already), waiting for them on this Mac.
+    Returns {"ids": {catalog id: library id}, "added": [...], "owned": [...], "missing": [...],
+    "unknown": [catalog ids Apple Music doesn't know]}."""
+    ids = list(dict.fromkeys(ids))
+    out = {"ids": {}, "added": [], "owned": [], "missing": [], "unknown": []}
     if not ids:
-        return [], [], [], []
+        return out
     wanted = await api().songs(ids)
-    unknown = [i for i in ids if i not in {c["id"] for c in wanted}]
+    out["unknown"] = [i for i in ids if i not in {c["id"] for c in wanted}]
     if not wanted:
         raise ToolError(f"Apple Music has no songs with those ids ({', '.join(ids)}).")
-    await api().add_to_library(songs=[c["id"] for c in wanted])
-    found, missing = await _into_library(wanted)
-    return found, [c for c in wanted if c not in missing], missing, unknown
+    have = await _into_library(wanted, wait=False)
+    new = [c for c, h in zip(wanted, have) if not h]
+    if new:
+        await api().add_to_library(songs=[c["id"] for c in new])
+    got = dict(zip([c["id"] for c in new], await _into_library(new) if new else []))
+    for c, h in zip(wanted, have):
+        hit = h or got.get(c["id"])
+        if hit:
+            out["ids"][c["id"]] = hit["id"]
+            out["owned" if h else "added"].append(c)
+        else:
+            out["missing"].append(c)
+    return out
 
 
-def _not_synced(missing: list[dict], unknown: list[str] = ()) -> str:
+async def _songs_in_order(songs: list[str] | None, last_skipped: int | None) -> tuple[list[str], list[str], dict]:
+    """Library ids for a playlist, in the order asked (named songs, then the last N skipped), each once:
+    (ids, labels, catalog result from _catalog_songs)."""
+    refs = [r.strip() for r in (songs or []) if r and r.strip()]
+    if not refs and not last_skipped:
+        raise ToolError("Say which songs (names or ids), or last_skipped=N.")
+    everything = await lib().songs()
+    names = [r for r in refs if not CATALOG_ID.match(r)]
+    found = dict(zip(names, resolve_songs(names, everything))) if names else {}
+    cat = await _catalog_songs([r for r in refs if CATALOG_ID.match(r)])
+    by_id = {s["id"]: s for s in everything}
+    by_catalog = {c["id"]: c for c in cat["added"] + cat["owned"]}
+    ids, labels = [], []
+    picks = [(found[r]["id"], label(found[r])) if r in found else
+             (cat["ids"].get(r), f"{by_catalog[r]['name']} — {by_catalog[r].get('artist', '')}" if r in by_catalog else None)
+             for r in refs]
+    if last_skipped:
+        picks += [(s["id"], label(s)) for s in recent(everything, "skipped", limit=last_skipped)]
+    for i, name in picks:
+        if i and i not in ids:
+            ids.append(i)
+            labels.append(name or label(by_id.get(i, {"name": i, "artist": ""})))
+    return ids, labels, cat
+
+
+def _not_synced(cat: dict) -> str:
+    missing, unknown = cat["missing"], cat["unknown"]
     out = f" Catalog ids not found on Apple Music: {', '.join(unknown)}." if unknown else ""
+    if cat["added"]:
+        out += f" Added to his library from Apple Music: {', '.join(c['name'] for c in cat['added'])}."
     if not missing:
         return out
     names = ", ".join(f"{c['name']} — {c.get('artist', '')}" for c in missing)
@@ -330,11 +371,9 @@ async def music_create_playlist(
 ) -> str:
     """Make a new playlist, optionally with songs from his library and/or the Apple Music catalog."""
     name = await _new_name(name)
-    chosen, catalog, _ = await _pick(songs, last_skipped) if (songs or last_skipped) else ([], [], [])
-    ids, added, missing, unknown = await _catalog_songs(catalog)
-    made = await lib().create(name, [s["id"] for s in chosen] + ids, description)
-    new = f" (added to his library from Apple Music: {', '.join(c['name'] for c in added)})" if added else ""
-    return f"Made playlist '{made['name']}' with {made['count']} songs{new}.{_not_synced(missing, unknown)}"
+    ids, _, cat = await _songs_in_order(songs, last_skipped) if (songs or last_skipped) else ([], [], None)
+    made = await lib().create(name, ids, description)
+    return f"Made playlist '{made['name']}' with {made['count']} songs.{_not_synced(cat) if cat else ''}"
 
 
 @mcp.tool(annotations=WRITE)
@@ -342,14 +381,12 @@ async def music_add_to_playlist(playlist: Playlist, songs: Songs = None, last_sk
     """Add songs (from his library or the catalog) to the end of one of his playlists."""
     p = await _playlist(playlist)
     _editable(p)
-    chosen, catalog, _ = await _pick(songs, last_skipped)
-    ids, added, missing, unknown = await _catalog_songs(catalog)
-    names = [label(s) for s in chosen] + [f"{c['name']} — {c.get('artist', '')}" for c in added]
+    ids, names, cat = await _songs_in_order(songs, last_skipped)
     out = ""
-    if chosen or ids:
-        r = await lib().add(p["id"], [s["id"] for s in chosen] + ids)
+    if ids:
+        r = await lib().add(p["id"], ids)
         out = f"Added {', '.join(names)} to '{r['name']}' ({r['count']} songs now)."
-    return (out + _not_synced(missing, unknown)).strip() or "Nothing to add."
+    return (out + _not_synced(cat)).strip() or "Nothing to add."
 
 
 @mcp.tool(annotations=WRITE)
@@ -554,7 +591,8 @@ async def music_play_catalog(
     if not wanted:
         raise ToolError(f"Apple Music has no {kind} {cid}" + (" (is it an album? use kind=album)" if kind == "song" else "") + ".")
     await api().add_to_library(**({"songs": [cid]} if kind == "song" else {"albums": [cid]}))
-    ids, missing = await _into_library(wanted)
+    hits = await _into_library(wanted)
+    ids, missing = [h["id"] for h in hits if h], [c for c, h in zip(wanted, hits) if not h]
     title = wanted[0]["name"] if kind == "song" else wanted[0].get("album", "the album")
     if not ids:
         return f"Added {title} to his library, but it hasn't reached {HOST} yet; try music_play in a minute."

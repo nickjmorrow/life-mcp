@@ -296,3 +296,26 @@ def test_unknown_catalog_ids_are_reported(fakes):
     _syncs(lib, api)
     out = call("music_add_to_playlist", playlist="workout", songs=["1440111111", "99999999999"])
     assert "Windowlicker" in out and "99999999999" in out and "not found" in out
+
+
+def test_songs_keep_the_order_asked_for(fakes):
+    lib, api, _ = fakes
+    _syncs(lib, api)
+    call("music_add_to_playlist", playlist="workout", songs=["1440111111", "Rumpta"])
+    assert lib.calls[-1] == ("add", "P1", ["0000000000000014", "0000000000000002"])
+
+
+def test_duplicate_catalog_ids_added_once(fakes):
+    lib, api, _ = fakes
+    _syncs(lib, api)
+    call("music_create_playlist", name="dupes", songs=["1440111111", "1440111111"])
+    assert [c for c in api.calls if c[0] == "library"] == [("library", ["1440111111"], [], [])]
+    assert lib.calls[-1] == ("create", "dupes", ["0000000000000014"], None)
+
+
+def test_song_already_in_library_is_not_added_again(fakes):
+    lib, api, _ = fakes
+    out = call("music_create_playlist", name="owned", songs=["1440222222"])   # Idioteque, Kid A: song 4
+    assert not [c for c in api.calls if c[0] == "library"]
+    assert lib.calls[-1] == ("create", "owned", ["0000000000000004"], None)
+    assert "added to his library" not in out
