@@ -5,7 +5,8 @@ Under the root folder (700; every file 600):
     core.md              the few facts that change most answers; its entries stay within CORE_LIMIT characters
     topics/<name>.md     one file per topic, loaded when a chat touches it
     archive.md           facts that ended or were replaced; never loaded, found by asking for it by name
-    .ids.json            the highest number used for each id letter that a removal left behind, so no id comes back
+    .ids.json            the highest number issued so far for each id letter, so no id ever comes back, even after
+                         the entry and its archive note are both removed
 
 A topic file is a header, then entries (two spaces of indent per level of detail), with optional `## group` lines:
 
@@ -17,7 +18,8 @@ A topic file is a header, then entries (two spaces of indent per level of detail
 
 The header is `(g)` or `(g, reviewed)` for topics whose facts go out of date. Entries keep their id for life, even
 when they move to another topic, and an id is never used twice: a new id is the highest number seen anywhere for
-its letter (in every file, in the archive's "was h7" notes, and in `.ids.json`) plus one. The archive holds entries as
+its letter (in every file, in the archive's "was h7" notes, and in `.ids.json`) plus one, and every write that issues
+an id saves the new highest numbers in `.ids.json` in the same commit. The archive holds entries as
 `- [z4] (was h7, archived 2027-01-05: no longer true) the text (date, source)`.
 
 Every write reads the files, changes them and commits once, under an exclusive lock on `<root>/.lock`, so a phone
@@ -384,9 +386,8 @@ class _Tx:
         self.base_ids: dict[str, set[str]] = {}
         self.base_size: dict[str, int] = {}
         self.gone: set[str] = set()  # topic files to delete
-        self.removed: list[str] = []  # ids deleted for good
         self.message = ""
-        self.marks = store._read_marks()
+        self.marks = store._read_marks()  # the highest number issued per letter, as last saved
         self._seen: dict[str, int] | None = None
         self._taken: set[str] = set()  # id letters handed to new topics in this write
 
@@ -421,8 +422,10 @@ class _Tx:
                 return doc, row
         raise MemoryError_(f"[{entry_id}] isn't in memory.")
 
-    def _highest(self) -> dict[str, int]:
-        """The highest number used so far for each id letter, anywhere (archived ids count through their notes)."""
+    def highest(self) -> dict[str, int]:
+        """The highest number used so far for each id letter: saved in .ids.json, in any file, or issued in this write
+        (archived entries count through their "was" notes). Taken before a write changes anything, so the numbers of
+        entries it removes are still in it."""
         if self._seen is None:
             seen = dict(self.marks)
             for doc in self.all_docs():
@@ -434,13 +437,13 @@ class _Tx:
         return self._seen
 
     def new_id(self, prefix: str) -> str:
-        seen = self._highest()
+        seen = self.highest()
         seen[prefix] = seen.get(prefix, 0) + 1
         return f"{prefix}{seen[prefix]}"
 
     def pick_prefix(self, name: str) -> str:
         """The first letter of a new topic's name that no topic, id or the archive already uses."""
-        used = set(self._highest()) | {d.prefix for d in self.all_docs()} | {_ARCHIVE_PREFIX} | self._taken
+        used = set(self.highest()) | {d.prefix for d in self.all_docs()} | {_ARCHIVE_PREFIX} | self._taken
         for letter in [c for c in name if c in string.ascii_lowercase] + list(string.ascii_lowercase):
             if letter not in used:
                 self._taken.add(letter)
@@ -482,26 +485,9 @@ class _Tx:
                 rank.append((2 if lost else 0 if gained else 1, name, text))
         out: list[tuple[str, str | None]] = [(_path_of(n), t) for _, n, t in sorted(rank, key=lambda r: r[0])]
         out += [(_path_of(n), None) for n in sorted(self.gone) if self.base.get(n) is not None]
-        marks = self._new_marks()
-        if marks is not None:
-            out.append((_MARKS, marks))
+        if out and self.highest() != self.marks:  # a write that changes nothing else never touches the record
+            out.append((_MARKS, json.dumps(self.highest(), sort_keys=True) + "\n"))
         return out
-
-    def _new_marks(self) -> str | None:
-        """The removed-id record with this write's removals added, or None if it doesn't change."""
-        if not self.removed:
-            return None
-        left: dict[str, int] = {}
-        for doc in self.docs.values():
-            for r in doc.rows:
-                _note(left, r.entry.id)
-                if doc.name == ARCHIVE and (was := _WAS.match(r.entry.text)):
-                    _note(left, was.group(1))
-        marks, changed = dict(self.marks), False
-        for entry_id in self.removed:
-            if int(entry_id[1:]) > max(left.get(entry_id[0], 0), marks.get(entry_id[0], 0)):
-                marks[entry_id[0]], changed = int(entry_id[1:]), True
-        return json.dumps(marks, sort_keys=True) + "\n" if changed else None
 
 
 # ---- the store -------------------------------------------------------------------------------------------------
@@ -721,7 +707,6 @@ class MemoryStore:
         doc, row = tx.find(entry_id)
         e = row.entry
         if remove:
-            tx.removed += [r.entry.id for r in doc.subtree(row)]
             doc.remove(*doc.span(row))
             tx.message = f"memory: remove {entry_id}"
             return f"Removed [{entry_id}]. End your reply with: removed from memory: {e.text}"
@@ -873,6 +858,7 @@ class MemoryStore:
             self._busy.on = True
             try:
                 tx = _Tx(self)
+                tx.highest()  # before the work changes anything
                 reply = work(tx)
                 self._flush(tx)
                 return reply

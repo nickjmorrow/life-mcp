@@ -1,4 +1,5 @@
 """The file-backed memory store: topic files in a local git repo. Every name and fact here is made up."""
+import json
 import signal
 import stat
 import subprocess
@@ -400,7 +401,7 @@ def test_new_root_is_private_and_the_first_write_starts_the_repo(tmp_path):
     assert stat.S_IMODE(root.stat().st_mode) == 0o700
     assert stat.S_IMODE((root / "core.md").stat().st_mode) == 0o600
     assert git_log(root) == ["memory: save c1 (phone)"]  # one commit: no separate "init" commit
-    assert git(root, "ls-files").split() == ["core.md"]  # the lock file isn't tracked
+    assert git(root, "ls-files").split() == [".ids.json", "core.md"]  # the lock file isn't tracked
     assert git(root, "status", "--porcelain") == ""
     assert stat.S_IMODE((root / ".lock").stat().st_mode) == 0o600
     store.save("plays chess", "core", "phone")
@@ -574,7 +575,8 @@ def test_on_change_files_committed_with_the_write(tmp_path):
     assert (store.root / "bundle.md").read_text() == "home has 1 entries\n"  # it saw the new state
     store.save("plays chess", "home", "phone")
     assert commit_count(store.root) == 2
-    assert files_in_head(store.root) == {"topics/home.md", "bundle.md"}  # one commit holds the topic and the bundle
+    # one commit holds the topic, the bundle and the record of issued ids
+    assert files_in_head(store.root) == {"topics/home.md", "bundle.md", ".ids.json"}
     assert (store.root / "views" / "summary.txt").read_text() == "same\n"
     assert git(store.root, "status", "--porcelain") == ""
 
@@ -689,7 +691,7 @@ def test_hand_edits_ride_along_with_the_next_commit(tmp_store):
     notes = tmp_store.root / "topics" / "health.md"
     notes.write_text(notes.read_text() + "\n- [h1] added by hand in an editor (2026-10-01, claude code)\n")
     tmp_store.save(FACTS[1], "home", "phone")
-    assert files_in_head(tmp_store.root) == {"topics/home.md", "topics/health.md"}
+    assert files_in_head(tmp_store.root) == {"topics/home.md", "topics/health.md", ".ids.json"}
     assert git(tmp_store.root, "status", "--porcelain") == ""
     assert ids(tmp_store, "health") == ["h1"]
 
@@ -771,6 +773,37 @@ def test_ids_stay_unique_when_entries_change_topic(tmp_store):
     assert tmp_store.save(FACTS[1], "home", "phone").startswith("Saved [o1]")
     tmp_store.archive("h3", "ended")
     assert tmp_store.save(FACTS[2], "health", "phone").startswith("Saved [h4]")  # archived ids count too
+
+
+def test_removing_an_archived_entry_doesnt_free_its_old_id(tmp_store):
+    tmp_store.save(FACTS[0], "home", "phone")  # o1
+    tmp_store.archive("o1", "gave it away")  # z1, which remembers that it was o1
+    tmp_store.update("z1", remove=True)  # forgotten for good: no entry and no archive note of o1 is left
+    assert ids(tmp_store, "home") == [] and tmp_store.entries("archive") == []
+    assert tmp_store.save(FACTS[1], "home", "phone").startswith("Saved [o2]")  # o1 is never issued again
+    assert MemoryStore(tmp_store.root).save(FACTS[2], "home", "phone").startswith("Saved [o3]")  # nor by a new process
+
+
+def test_ids_written_by_hand_stay_used_after_a_removal(tmp_store):
+    put(tmp_store.root, "health", """
+        - [h1] a (2026-09-01, phone)
+        - [h2] b (2026-09-01, phone)
+        - [h3] c (2026-09-01, phone)
+        """)  # no .ids.json yet, as after a migration
+    tmp_store.update("h3", remove=True)  # the highest, and the first thing ever written
+    assert tmp_store.save(FACTS[0], "health", "phone").startswith("Saved [h4]")
+
+
+def test_every_issued_id_is_recorded_in_the_commit_that_issues_it(tmp_store):
+    root = tmp_store.root
+    tmp_store.save(FACTS[0], "home", "phone")
+    tmp_store.save(FACTS[1], "health", "phone")
+    assert json.loads((root / ".ids.json").read_text()) == {"h": 1, "o": 1}
+    assert files_in_head(root) == {"topics/health.md", ".ids.json"}
+    tmp_store.archive("o1", "gave it away")  # the archive's z1 counts too
+    assert json.loads((root / ".ids.json").read_text()) == {"h": 1, "o": 1, "z": 1}
+    tmp_store.update("h1", text=FACTS[2])  # no new id: the record isn't touched
+    assert files_in_head(root) == {"topics/health.md"}
 
 
 def test_removed_ids_survive_in_a_tracked_file(tmp_store):
