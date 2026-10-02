@@ -62,6 +62,7 @@ _CORE_ABOUT = "facts that change most answers"
 _ARCHIVE_ABOUT = "facts that ended or were replaced, kept for reference; never loaded"
 _HELD_SHOWN = 3  # how many similar entries a held save lists
 _SNIPPET = 100  # characters of an entry shown in a held save
+_GROUP_MAX = 60  # characters in a group name: it becomes a `## ...` line, which can sit in core
 _GIT_TIMEOUT = 60  # seconds; a stuck git must not hold the lock forever
 _LOCK = ".lock"
 _MARKS = ".ids.json"
@@ -576,7 +577,7 @@ class MemoryStore:
              similar: str | None = None) -> str:
         text = self._text(text)
         source = _source(source)
-        group = _clean(under, "group name") if under and under.strip() else None
+        group = self._text(under, "group name", _GROUP_MAX) if under and under.strip() else None
         due = _date(review, "The review date") if review and review.strip() else None
         add, replace_id = _parse_similar(similar)
         return self._write(lambda tx: self._save(tx, text, topic, source, group, due, add, replace_id))
@@ -595,7 +596,7 @@ class MemoryStore:
     def archive(self, entry_id: str, why: str, ended: str | None = None, text: str | None = None) -> str:
         """Close an entry: it moves to archive.md with its end date and why, optionally rewritten in the past tense."""
         eid = _entry_id(entry_id)
-        reason = _clean(why, "reason")
+        reason = self._text(why, "reason")
         end = _date(ended, "The ended date") if ended is not None else None
         new_text = self._text(text) if text is not None else None
         return self._write(lambda tx: self._archive(tx, eid, reason, end or today(), new_text))
@@ -660,8 +661,12 @@ class MemoryStore:
         except (FileNotFoundError, ValueError, AttributeError):
             return {}
 
-    def _text(self, text: str) -> str:
-        text = _clean(text, "memory text")
+    def _text(self, text: str, what: str = "memory text", limit: int | None = None) -> str:
+        """New text as it will be written (one line, no invisible characters), refused if the guard refuses it.
+        Every free-text argument goes through here: the entry text, group names, reasons and about lines."""
+        text = _clean(text, what)
+        if limit is not None and len(text) > limit:
+            raise MemoryError_(f"The {what} is longer than {limit} characters; shorten it.")
         if self.guard is not None:
             self.guard(text)
         return text
@@ -802,7 +807,7 @@ class MemoryStore:
         if blank:
             raise MemoryError_("Give each new topic an 'about' line, such as 'plants, beds, tools; load for "
                                f"planting or watering'. Missing: {', '.join(blank)}.")
-        lines = {n: self._text(abouts[n]) if (abouts.get(n) or "").strip() else src.about for n in wanted}
+        lines = {n: self._text(abouts[n], "about line") if (abouts.get(n) or "").strip() else src.about for n in wanted}
 
         placed: dict[str, str] = {}
         twice, strangers = [], []

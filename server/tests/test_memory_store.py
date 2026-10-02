@@ -573,7 +573,10 @@ def test_guard_sees_the_flattened_text(tmp_path):
 
 
 def test_guard_covers_every_way_text_enters_memory(tmp_path):
+    seen = []
+
     def guard(text):
+        seen.append(text)
         if "forbidden" in text:
             raise ValueError("refused by the guard")
 
@@ -585,8 +588,26 @@ def test_guard_covers_every_way_text_enters_memory(tmp_path):
     with pytest.raises(ValueError):
         store.archive("h3", "it passed", text="forbidden rewrite")
     with pytest.raises(ValueError):
+        store.archive("h3", "forbidden reason")  # why the entry ended is text too
+    with pytest.raises(ValueError):
+        store.save("a fine fact", "health", "phone", under="forbidden group")  # a group name becomes a `##` line
+    with pytest.raises(ValueError):
         store.split("health", {"x": ["h1"], "y": ["h2", "h3"]}, {"x": "forbidden about", "y": "fine"})
     assert ids(store, "health") == ["h1", "h2", "h3"] and store.entries("archive") == []
+    assert "##" not in store.render("health")
+    seen.clear()  # and the guard is shown what would be written: one line, trimmed
+    store.archive("h3", "  it  passed\nfor now ")
+    store.save("another fine fact", "health", "phone", under="  Linear  ")
+    assert seen == ["it passed for now", "another fine fact", "Linear"]
+
+
+def test_group_names_are_capped_at_60_characters(tmp_store):
+    assert tmp_store.save("a fine fact", "health", "phone", under="g" * 60).startswith("Saved [h1]")
+    with pytest.raises(MemoryError_, match="60 characters"):
+        tmp_store.save("another fine fact", "health", "phone", under="g" * 61)
+    with pytest.raises(MemoryError_, match="60 characters"):
+        tmp_store.save("a third fact", "core", "phone", under="grow " * 13)  # 64 after trimming
+    assert [e.under for e in tmp_store.entries("health")] == ["g" * 60] and tmp_store.entries("core") == []
 
 
 def test_on_change_files_committed_with_the_write(tmp_path):
