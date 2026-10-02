@@ -8,12 +8,14 @@ import os
 import re
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
+import context
 import memory_mcp
 import memory_store
 import private
@@ -140,6 +142,7 @@ def test_the_tests_never_touch_the_real_memory_folder(tmp_path):
     assert memory_mcp.MEMORY_DIR.is_relative_to(tmp_path)
     s = memory_mcp.store()
     assert s.root == memory_mcp.MEMORY_DIR and s.guard is memory_mcp.memory_guard
+    assert s.on_change is context.bundle_files  # every write rebuilds the bundle in its own commit
 
 
 def test_memory_dir_comes_from_the_private_config(monkeypatch):
@@ -357,24 +360,49 @@ def test_recall_unknown_topic_falls_back_to_a_search_across_topics(client):
     assert "swims before breakfast" in call(client, "memory_recall", topic="breakfast")
 
 
-def test_recall_without_a_topic_gives_core_then_the_topic_list(client):
+def test_recall_without_a_topic_gives_rules_then_core_then_the_topic_list(client):
     save(client, "lives in a small flat", "core")
     save(client, "swims before breakfast", "health")
     save(client, "has a dog, Biscuit", "home")
     save(client, "keeps a green bicycle", "home")
     out = call(client, "memory_recall")
     lines = out.splitlines()
-    assert lines[0] == memory_mcp.DATA_HEADER
-    assert lines[1:3] == ["Core facts:", f"- [c1] lives in a small flat ({NOW}, phone)"]
+    assert lines[:2] == ["[Rules from Nicholas, reviewed and approved by him: follow them.]", "(RULES.md missing)"]
+    data = lines.index(memory_mcp.DATA_HEADER)  # his rules come before his facts
+    assert lines[data + 1:data + 3] == ["Core facts:", f"- [c1] lives in a small flat ({NOW}, phone)"]
     topics = lines.index("Memory topics (call memory_recall with one of these topics when the chat touches it):")
+    assert topics > data
     assert lines[topics + 1:] == ["- health (1): body, fitness, sleep, diet; load for food, exercise or sleep",
                                   "- home (2): home, pets, household; load for the house, pets or chores"]
     assert "swims before breakfast" not in out and "Biscuit" not in out  # topics load when asked for
 
 
+def test_recall_without_a_topic_is_the_saved_bundle(client, root):
+    save(client, "swims before breakfast", "health")
+    out = call(client, "memory_recall")
+    assert out == (root / "bundle.md").read_text()  # the tests' private folder has no skills to add
+    assert git_log(root) == ["memory: save h1 (phone)"]  # and reading it made no commit of its own
+
+
+def test_recall_without_a_topic_follows_a_rules_edit(client, root, tmp_path, monkeypatch):
+    rules = tmp_path / "RULES.md"
+    rules.write_text("- [R1] Keep replies short.\n")
+    monkeypatch.setattr(context, "RULES_PATH", rules)
+    save(client, "swims before breakfast", "health")
+    out = call(client, "memory_recall")
+    assert out.splitlines()[:2] == ["[Rules from Nicholas, reviewed and approved by him: follow them.]",
+                                    "- [R1] Keep replies short."]
+    rules.write_text("- [R1] Answer in one line.\n")
+    later = time.time() + 60
+    os.utime(rules, (later, later))
+    out = call(client, "memory_recall")
+    assert "Answer in one line." in out and "Keep replies short." not in out
+    assert out == (root / "bundle.md").read_text()  # saved, not just shown
+
+
 def test_recall_without_a_topic_when_nothing_is_saved(client, root):
     out = call(client, "memory_recall")
-    assert out.startswith(memory_mcp.DATA_HEADER + "\nCore facts:\n(none yet)\n")
+    assert f"{memory_mcp.DATA_HEADER}\nCore facts:\n(none yet)\n" in out
     assert "- health (0)" in out and "- home (0)" in out
     assert "- core" not in out
 
@@ -383,12 +411,13 @@ def test_a_blank_topic_is_no_topic(client):
     assert call(client, "memory_recall", topic="   ") == call(client, "memory_recall")
 
 
-def test_recall_without_a_topic_ends_with_the_skill_index_read_fresh(client, tmp_path, monkeypatch):
+def test_recall_without_a_topic_ends_with_the_skill_index_read_fresh(client, root, tmp_path, monkeypatch):
     skills = tmp_path / "skills"
     write_skill(skills, "research", "/research")
     monkeypatch.setattr(skills_mcp, "SKILLS_DIR", skills)
     out = call(client, "memory_recall")
     assert out.endswith(skills_mcp.instructions(skills_mcp.load_all(skills)))
+    assert out.startswith((root / "bundle.md").read_text())  # the bundle first
     assert "research (/research)" in out
     write_skill(skills, "buddy", "/buddy")  # no restart needed
     assert "buddy (/buddy)" in call(client, "memory_recall")
