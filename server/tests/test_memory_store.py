@@ -283,7 +283,7 @@ def test_empty_text_refused(tmp_store):
         tmp_store.update("c1", text="  ")
 
 
-@pytest.mark.parametrize("source", ["", "phone, web", "(phone)", "phone)", "x" * 41, "review 2026-11-05"])
+@pytest.mark.parametrize("source", ["", "phone, web", "(phone)", "phone)", "x" * 41, "review 2026-11-05", "review never"])
 def test_bad_source_refused(tmp_store, source):
     with pytest.raises(MemoryError_, match="source"):
         tmp_store.save("has a dog, Biscuit", "home", source)
@@ -300,10 +300,10 @@ def test_review_date_is_stored_and_checked(tmp_store):
     assert e.review == "2026-11-02"
     assert lines_of(tmp_store.root, "health")[-1] == (
         f"- [h1] is training for a 10k race ({NOW}, phone, review 2026-11-02)")
-    for bad in ("soon", "2026-02-30", "11/02/2026", "2026-11-2"):
-        with pytest.raises(MemoryError_, match="review"):
+    for bad in ("soon", "2026-02-30", "11/02/2026", "2026-11-2", "nevermind", "never!"):
+        with pytest.raises(MemoryError_, match=r"review date.*'never'"):
             tmp_store.save("takes a nap", "health", "phone", review=bad)
-    with pytest.raises(MemoryError_, match="review"):
+    with pytest.raises(MemoryError_, match=r"review date.*'never'"):
         tmp_store.update("h1", review="next week")
 
 
@@ -348,6 +348,23 @@ def test_file_format_is_parsed_into_entries(tmp_path):
     ]
     assert store.entries("health")[0].text == "keeps a paper calendar by the front door"
     assert store.entries("health")[5].text == "buys oat flour (2 lb bags)"  # no date first, so it isn't metadata
+
+
+def test_review_never_is_read_and_written(tmp_store):
+    put(tmp_store.root, "health", """
+        - [h1] a lasting trait (2026-09-28, web, review never)
+        - [h2] another one, with no source (2026-09-28, review never)
+        """)
+    assert [(e.id, e.text, e.date, e.source, e.review) for e in tmp_store.entries("health")] == [
+        ("h1", "a lasting trait", "2026-09-28", "web", "never"),
+        ("h2", "another one, with no source", "2026-09-28", None, "never")]
+    tmp_store.save("has a spare key with a neighbor", "health", "phone", review="never")
+    tmp_store.save("keeps a paper calendar", "health", "phone", review=" Never ")  # any case, trimmed
+    assert lines_of(tmp_store.root, "health")[-2:] == [
+        f"- [h3] has a spare key with a neighbor ({NOW}, phone, review never)",
+        f"- [h4] keeps a paper calendar ({NOW}, phone, review never)"]
+    assert [e.review for e in tmp_store.entries("health")] == ["never"] * 4
+    assert [e.text for e in tmp_store.entries("health")][0] == "a lasting trait"  # the metadata isn't part of the text
 
 
 def test_render_is_the_file_text(tmp_store):
@@ -1216,6 +1233,57 @@ def test_review_due_uses_entry_date_then_90_day_default(tmp_path):
     assert [e.id for e in store.review_due("2026-12-01")] == ["h2", "m1", "m2", "m3", "m4", "m5", "m6"]
     with pytest.raises(MemoryError_, match="today"):
         store.review_due("soon")
+
+
+def test_review_never_is_never_due(tmp_path):
+    root = tmp_path / "memory"
+    make_topic(root, "core", "c", "core")
+    make_topic(root, "mind", "m", "moods", reviewed=True, body="""
+        - [m1] a lasting trait, very old (2020-01-01, phone, review never)
+        - [m2] an old state with no review date (2020-01-01, phone)
+        - [m3] a lasting trait with no source (2020-01-01, review never)
+        """)
+    store = MemoryStore(root, commit=False)
+    assert [e.id for e in store.review_due("2030-01-01")] == ["m2"]
+    assert [e.id for e in store.review_due("2999-12-31")] == ["m2"]
+
+
+def test_update_keeps_review_never(tmp_path, clock):
+    root = tmp_path / "memory"
+    make_topic(root, "core", "c", "core")
+    make_topic(root, "mind", "m", "moods", reviewed=True,
+               body="- [m1] a lasting trait (2020-01-01, phone, review never)")
+    store = MemoryStore(root, commit=False)
+    store.update("m1")  # still true: the date moves, the never stays
+    assert (store.entries("mind")[0].date, store.entries("mind")[0].review) == (NOW, "never")
+    clock.now = "2026-10-06"
+    store.update("m1", text="a lasting trait, reworded")
+    assert [(e.text, e.date, e.review) for e in store.entries("mind")] == [
+        ("a lasting trait, reworded", "2026-10-06", "never")]
+    assert lines_of(root, "mind")[-1] == "- [m1] a lasting trait, reworded (2026-10-06, phone, review never)"
+    store.update("m1", review="2026-12-01")  # an explicit date replaces it
+    assert store.entries("mind")[0].review == "2026-12-01"
+    store.update("m1", review="never")  # and never can be set again
+    assert store.entries("mind")[0].review == "never"
+    clock.now = "2026-12-02"
+    store.update("m1", review="2026-12-01")
+    store.update("m1")  # a date-based review that has come is cleared, as before
+    assert store.entries("mind")[0].review is None
+
+
+def test_merge_review_a_date_beats_never(tmp_store):
+    put(tmp_store.root, "health", """
+        - [h1] a lasting trait (2026-09-01, phone, review never)
+        - [h2] another lasting trait (2026-09-02, phone, review never)
+        - [h3] a passing state (2026-09-03, phone, review 2026-11-01)
+        - [h4] no review at all (2026-09-04, phone)
+        """)
+    tmp_store.merge("h1", "h2", "two lasting traits")
+    assert tmp_store.entries("health")[0].review == "never"  # both never
+    tmp_store.merge("h4", "h1", "a lasting trait and a plain fact")
+    assert [e.review for e in tmp_store.entries("health") if e.id == "h4"] == ["never"]  # the only review there is
+    tmp_store.merge("h4", "h3", "a trait and a passing state")
+    assert [e.review for e in tmp_store.entries("health") if e.id == "h4"] == ["2026-11-01"]  # the date still applies
 
 
 def test_still_true_update_takes_an_entry_out_of_the_due_list(tmp_path, clock):

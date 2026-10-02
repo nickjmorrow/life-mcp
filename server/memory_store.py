@@ -16,7 +16,8 @@ A topic file is a header, then entries (two spaces of indent per level of detail
     ## Linear
     - [g3] a fact about one app (2026-09-28, claude code, review 2026-11-01)
 
-The header is `(g)` or `(g, reviewed)` for topics whose facts go out of date. Entries keep their id for life, even
+The header is `(g)` or `(g, reviewed)` for topics whose facts go out of date. `review <date>` asks for a check on that
+day; `review never` marks a lasting fact that is never asked about again. Entries keep their id for life, even
 when they move to another topic, and an id is never used twice: a new id is the highest number seen anywhere for
 its letter (in every file, in the archive's "was h7" notes, and in `.ids.json`) plus one, and every write that issues
 an id saves the new highest numbers in `.ids.json` in the same commit. The archive holds entries as
@@ -66,6 +67,7 @@ _GROUP_MAX = 60  # characters in a group name: it becomes a `## ...` line, which
 _GIT_TIMEOUT = 60  # seconds; a stuck git must not hold the lock forever
 _LOCK = ".lock"
 _MARKS = ".ids.json"
+_NEVER = "never"  # a review setting: a lasting fact, never due
 _AUTHOR = "Life connector"
 _EMAIL = "life@localhost"
 
@@ -76,7 +78,7 @@ _GROUP = re.compile(r"^## (\S.*)$")
 _HEADER = re.compile(r"^# (\S+) \(([a-z])(, reviewed)?\):[ ]?(.*)$")
 _TAIL = re.compile(r"^(.*) \(([^()]*)\)$")
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_REVIEW = re.compile(r"^review (\d{4}-\d{2}-\d{2})$")
+_REVIEW = re.compile(r"^review (\d{4}-\d{2}-\d{2}|never)$")
 _WAS = re.compile(r"^\(was ([a-z][1-9][0-9]*)[,)]")
 _SOURCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$")
 # Zero-width and text-direction controls can hide text from a reader; they're refused, never stripped.
@@ -95,7 +97,7 @@ class Entry:
     source: str | None
     depth: int  # 0 for a top-level entry, 1 for a detail under one, and so on
     under: str | None  # the `## group` it sits in
-    review: str | None = None  # an explicit date to check it again
+    review: str | None = None  # a date to check it again, or "never" for a lasting fact
 
 
 @dataclasses.dataclass
@@ -136,6 +138,26 @@ def _date(value: str, what: str) -> str:
     except ValueError:
         raise MemoryError_(f"{what} must be a date like 2026-11-05 (year-month-day).") from None
     return value
+
+
+def _review(value: str | None) -> str | None:
+    """A review setting from a caller: a date, or 'never' for a lasting fact. None when none was given."""
+    if value is None or not value.strip():
+        return None
+    if value.strip().lower() == _NEVER:
+        return _NEVER
+    try:
+        return _date(value, "The review date")
+    except MemoryError_:
+        raise MemoryError_("The review date must be a date like 2026-11-05, or 'never' for a lasting fact.") from None
+
+
+def _earliest_review(*reviews: str | None) -> str | None:
+    """The review that comes first: the earliest date if any has one, else 'never' if any says so."""
+    dates = [r for r in reviews if r and r != _NEVER]
+    if dates:
+        return min(dates)
+    return _NEVER if _NEVER in reviews else None
 
 
 def _source(value: str) -> str:
@@ -547,13 +569,16 @@ class MemoryStore:
 
     def review_due(self, today: str) -> list[Entry]:
         """Entries to check again: an explicit review date that has come, or (in a reviewed topic, with no explicit
-        date) a date older than DEFAULT_REVIEW_DAYS. An explicit date wins either way; the archive is never due."""
+        date) a date older than DEFAULT_REVIEW_DAYS. An explicit date wins either way; `review never` and the
+        archive are never due."""
         now = _date(today, "today")
         due = []
         for doc in self._docs(archive=False):
             for r in doc.rows:
                 e = r.entry
                 start = _parse_date(e.date) if e.date else None
+                if e.review == _NEVER:
+                    continue
                 if e.review:
                     when = e.review
                 elif doc.reviewed and start:
@@ -578,19 +603,20 @@ class MemoryStore:
         text = self._text(text)
         source = _source(source)
         group = self._text(under, "group name", _GROUP_MAX) if under and under.strip() else None
-        due = _date(review, "The review date") if review and review.strip() else None
+        due = _review(review)
         add, replace_id = _parse_similar(similar)
         return self._write(lambda tx: self._save(tx, text, topic, source, group, due, add, replace_id))
 
     def update(self, entry_id: str, text: str | None = None, remove: bool = False,
                review: str | None = None) -> str:
         """Change an entry's text and/or review date, or (with no arguments) confirm it's still true: the date
-        becomes today. A review date that had come due is cleared by the update, since that was the review."""
+        becomes today. A review date that had come due is cleared by the update, since that was the review;
+        `review never` stays unless a new setting is passed."""
         eid = _entry_id(entry_id)
         if remove and (text is not None or review is not None):
             raise MemoryError_("Pass either remove=true or new text, not both.")
         new_text = self._text(text) if text is not None else None
-        due = _date(review, "The review date") if review is not None and review.strip() else None
+        due = _review(review)
         return self._write(lambda tx: self._update(tx, eid, new_text, remove, due))
 
     def archive(self, entry_id: str, why: str, ended: str | None = None, text: str | None = None) -> str:
@@ -725,7 +751,8 @@ class MemoryStore:
         if doc.name == ARCHIVE:
             raise MemoryError_(f"[{entry_id}] is in the archive, where entries can only be removed, not changed.")
         new_text = text if text is not None else e.text
-        new_review = review or (None if e.review and e.review <= today() else e.review)
+        passed = e.review is not None and e.review != _NEVER and e.review <= today()
+        new_review = review or (None if passed else e.review)  # a date that came is the review just done; never stays
         doc.set_line(row.line, _line(e.depth, entry_id, new_text, today(), e.source, new_review))
         tx.message = f"memory: update {entry_id}"
         return f"Updated [{entry_id}]. End your reply with: updated memory: {new_text}"
@@ -768,7 +795,7 @@ class MemoryStore:
                                "nested under.")
         k, g = keep.entry, gone.entry
         date = max((d for d in (k.date, g.date) if d), default=today())  # a merge isn't a review: the newer date stands
-        review = min((r for r in (k.review, g.review) if r), default=None)  # the earlier check still applies
+        review = _earliest_review(k.review, g.review)  # a date still applies; never only if both have no date
         merged = f"{text} (merged from {gone_id})"
         keep_doc.set_line(keep.line, _line(k.depth, keep_id, merged, date, k.source, review))
         tx.archive_rows(gone_doc, gone_id, f"merged into {keep_id}", today())
