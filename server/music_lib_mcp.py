@@ -15,7 +15,7 @@ from pydantic import Field
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
-from applemusic_api import AppleMusic, AppleMusicError
+from applemusic_api import SIGN_IN, AppleMusic, AppleMusicError
 from music_app import QUEUE
 from music_library import HEX_ID, MusicLibrary, backup, label, parse_date, recent, resolve_songs, top
 import music_mcp
@@ -559,7 +559,8 @@ async def music_status() -> str:
         return "\n".join(lines)
     u = a.user()
     if not u:
-        lines.append(f"Apple Music API: key set up, but not signed in (run applemusic_signin.py on {HOST}).")
+        lines.append(f"Apple Music API: key set up, but not signed in on {HOST}: {SIGN_IN}. "
+                     "Catalog search, artists and charts work meanwhile (US catalog).")
         return "\n".join(lines)
     try:
         age = f"{(datetime.now(timezone.utc) - datetime.fromisoformat(u['saved'])).days} days ago"

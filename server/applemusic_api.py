@@ -21,7 +21,9 @@ CONFIG = Path.home() / ".config" / "life-mcp"
 KEY_FILE = CONFIG / "applemusic_key.p8"
 TOKEN_FILE = CONFIG / "applemusic.json"
 DEV_TOKEN_DAYS = 30
-SIGN_IN = "run `uv run applemusic_signin.py` in ~/Projects/life-mcp/server and sign in to Apple Music"
+SIGN_IN = ("sign in on the Mac he's at with `uv run applemusic_signin.py` in ~/Projects/life-mcp/server, then "
+           "`~/Projects/mac-setup/secrets.py push-file ~/.config/life-mcp/applemusic.json` and "
+           "`secrets.py pull` on the connector's Mac")
 
 
 class AppleMusicError(ToolError):
@@ -152,6 +154,10 @@ class AppleMusic:
         return r.json() if r.content else {}
 
     async def storefront(self) -> str:
+        """His storefront once signed in; before that, the US catalog (not cached, so a later
+        sign-in picks up his real one)."""
+        if not self.user():
+            return "us"
         if not self._storefront:
             data = await self.request("GET", "/v1/me/storefront")
             self._storefront = data["data"][0]["id"]

@@ -242,3 +242,10 @@ def test_catalog_playlist_not_editable(fakes):
     api.playlists_[0]["editable"] = False
     with pytest.raises(ToolError, match="won't let apps add"):
         call("music_add_to_playlist", playlist="workout", songs=["1440111111"])
+
+
+def test_status_says_which_mac_needs_the_token(fakes, monkeypatch):
+    fakes[1].signed_in = False
+    monkeypatch.setattr(music_lib_mcp, "HOST", "Edgar")
+    out = call("music_status")
+    assert "not signed in on Edgar" in out and "secrets.py push-file" in out
