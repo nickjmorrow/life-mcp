@@ -18,5 +18,7 @@ import usage_log
 def _usage_log_in_tmp(tmp_path, monkeypatch):
     """Tests never write to the real connector usage log or the real Life Home token."""
     monkeypatch.setattr(usage_log, "PATH", tmp_path / "connector-usage.jsonl")
+    import memory_mcp
+    monkeypatch.setattr(memory_mcp, "SNAPSHOT", tmp_path / "memory-snapshot.md")
     import home_mcp
     monkeypatch.setattr(home_mcp, "TOKEN_PATH", tmp_path / "config" / "home-token")

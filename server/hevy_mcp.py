@@ -13,6 +13,8 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+import skill_tools
+
 BASE = "https://api.hevyapp.com"
 PATH = re.compile(r"^/?v1/[A-Za-z0-9_\-/]+$")  # API paths only: no host, query string or ".."
 MAX_CHARS = 60_000
@@ -45,12 +47,16 @@ async def request(method: str, path: str, query: dict | None = None, body: dict 
     return text if len(text) <= MAX_CHARS else text[:MAX_CHARS] + f"\n[cut at {MAX_CHARS} characters: page with pageSize]"
 
 
-@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
+API_DOC = "Call Hevy's REST API as Nicholas (the server adds his API key). Returns the JSON response."
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True},
+          description=skill_tools.describe(API_DOC, "hevy"))
 async def api(
     method: Literal["GET", "POST", "PUT"],
     path: Annotated[str, Field(description="API path, e.g. /v1/workouts, /v1/routines/<id>, /v1/exercise_history/<template id>")],
     query: Annotated[dict[str, Any] | None, Field(description="Query parameters, e.g. {\"page\": 1, \"pageSize\": 10}")] = None,
     body: Annotated[dict[str, Any] | None, Field(description="JSON body for POST/PUT")] = None,
 ) -> str:
-    """Call Hevy's REST API as Nicholas (the server adds his API key). Returns the JSON response."""
+    skill_tools.used("hevy")
     return await request(method, path, query, body)

@@ -11,8 +11,10 @@ import asyncio
 import dataclasses
 import datetime as dt
 import difflib
+import os
 import re
 import sys
+from pathlib import Path
 from typing import Annotated, Literal
 
 from fastmcp import FastMCP
@@ -371,6 +373,31 @@ class Memory:
         return f"Updated [{entry_id}]. End your reply with: updated memory: {text.strip() if text else node.text}"
 
 
+# A copy of the whole memory, rewritten whenever it's read in full or changed, so Claude Code on his Macs can
+# load it at session start without going through Logseq (their SessionStart hook copies it from here).
+SNAPSHOT = Path.home() / "Library" / "Application Support" / "life-mcp" / "memory-snapshot.md"
+
+
+def write_snapshot(text: str) -> None:
+    """Replace the snapshot (600, in a 700 folder). Never breaks a tool call."""
+    try:
+        SNAPSHOT.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        tmp = SNAPSHOT.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.replace(tmp, SNAPSHOT)
+    except OSError as e:
+        print(f"Memory snapshot not written: {e!r}", file=sys.stderr)
+
+
+async def refresh_snapshot(memory: "Memory") -> None:
+    try:
+        write_snapshot(await memory.recall())
+    except Exception as e:
+        print(f"Memory snapshot not refreshed: {e!r}", file=sys.stderr)
+
+
 # Set by server.mount_skills: text added to every recall (the skill index). memory_recall is the one
 # call claude.ai reliably makes at the start of a chat, so the skill index rides along with it.
 RECALL_EXTRA = None
@@ -388,6 +415,8 @@ def build(cli, ensure_properties, edn) -> FastMCP:
         conversation about his life, plans, preferences or setup."""
         usage_log.record("memory_recall")
         out = await memory.recall(topic)
+        if not topic:
+            write_snapshot(out)
         return out + "\n\n" + RECALL_EXTRA() if RECALL_EXTRA else out
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False})
@@ -401,7 +430,9 @@ def build(cli, ensure_properties, edn) -> FastMCP:
         """Save something lasting Nicholas told you or you learned about him. Never save passwords,
         keys, account numbers or one-off details. Near-duplicates are refused with the existing
         entry's id. Afterwards, end your reply with the line it gives."""
-        return await memory.save(section, text, source, under, stage)
+        out = await memory.save(section, text, source, under, stage)
+        await refresh_snapshot(memory)
+        return out
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True})
     async def memory_update(
@@ -411,6 +442,8 @@ def build(cli, ensure_properties, edn) -> FastMCP:
         remove: Annotated[bool, Field(description="Delete the entry (and anything nested under it). Only when Nicholas asks you to forget it, or a correction makes it wrong.")] = False,
     ) -> str:
         """Change or remove a memory. Afterwards, end your reply with the line it gives."""
-        return await memory.update(entry_id, text, stage, remove)
+        out = await memory.update(entry_id, text, stage, remove)
+        await refresh_snapshot(memory)
+        return out
 
     return mcp

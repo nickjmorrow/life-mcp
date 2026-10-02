@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import re
 import time
-from pathlib import Path
 from typing import Annotated, Literal
 
 from fastmcp import FastMCP
@@ -20,8 +19,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 import fsrs
-import private
-import usage_log
+import skill_tools
 
 CARDS_QUERY = """[:find ?b ?title ?page ?state ?due
  :where [?t :db/ident :logseq.class/Card] [?b :block/tags ?t] [?b :block/title ?title]
@@ -52,25 +50,6 @@ ChapterArg = Annotated[str | None, Field(
 
 
 SKILL = "flashcard-review"
-SKILL_MD = private.DIR / "skills" / SKILL / "SKILL.md"
-_last_logged = 0.0
-
-
-def skill_text(path: Path = SKILL_MD) -> str:
-    """The flashcard-review skill's body (no frontmatter). It rides in cards_next's description, because claude.ai
-    finds these tools by tool search and often never loads the skill on its own."""
-    try:
-        return re.sub(r"\A---\n.*?\n---\n", "", path.read_text(), flags=re.S).strip()
-    except OSError:
-        return ""
-
-
-def log_skill_use() -> None:
-    """Count the skill as loaded for the lessons job's usage review, at most once per 30 minutes (one session)."""
-    global _last_logged
-    if time.time() - _last_logged > 1800:
-        _last_logged = time.time()
-        usage_log.record("skill_load", skill=SKILL)
 
 
 def now_ms() -> int:
@@ -194,9 +173,7 @@ only when he's wrong or doesn't know."""
 def build(cli, clock=now_ms, skill: str | None = None) -> FastMCP:
     mcp = FastMCP("Cards")
     deck = Deck(cli, clock)
-    skill = skill_text() if skill is None else skill
-    next_doc = NEXT_DOC + (f"\n\nRun the session exactly like this (his {SKILL} skill; no need to skill_load it):\n\n{skill}"
-                           if skill else "")
+    next_doc = skill_tools.describe(NEXT_DOC, SKILL, skill)
 
     def card_line(c: dict, left: str) -> str:
         where = f"{c['page']} › {c['chapter']}" if c.get("chapter") else c["page"]
@@ -226,7 +203,7 @@ def build(cli, clock=now_ms, skill: str | None = None) -> FastMCP:
         chapter: ChapterArg = None,
         include_new: Annotated[bool, Field(description="Show a new card when nothing is due")] = True,
     ) -> str:
-        log_skill_use()
+        skill_tools.used(SKILL)
         due, new, later = deck.split(await deck.cards(page, chapter))
         queue = due + (new if include_new else [])
         if not queue:

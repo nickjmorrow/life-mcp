@@ -123,11 +123,7 @@ def test_topic_passed_as_page_falls_back_to_headings():
         call(mcp, "cards_next", page="sharding")
 
 
-def test_skill_rides_in_cards_next_description(tmp_path):
-    md = tmp_path / "SKILL.md"
-    md.write_text("---\nname: flashcard-review\ndescription: x\n---\n\n# Flashcard review\n\nSay Yep.\n")
-    assert cards_mcp.skill_text(md) == "# Flashcard review\n\nSay Yep."
-    assert cards_mcp.skill_text(tmp_path / "missing.md") == ""
+def test_skill_rides_in_cards_next_description():
     mcp = cards_mcp.build(FakeCli(), clock=lambda: NOW, skill="# Flashcard review\n\nSay Yep.")
     tools = asyncio.run(mcp.list_tools()) if hasattr(mcp, "list_tools") else list(asyncio.run(mcp.get_tools()).values())
     desc = next(t.description for t in tools if t.name == "cards_next")
@@ -136,8 +132,9 @@ def test_skill_rides_in_cards_next_description(tmp_path):
 
 def test_cards_next_logs_skill_use_once_per_session(monkeypatch):
     import json
+    import skill_tools
     import usage_log
-    monkeypatch.setattr(cards_mcp, "_last_logged", 0.0)
+    monkeypatch.setattr(skill_tools, "_logged", {})
     mcp = cards_mcp.build(FakeCli(), clock=lambda: NOW, skill="")
     call(mcp, "cards_next")
     call(mcp, "cards_next")

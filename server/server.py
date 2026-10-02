@@ -33,6 +33,7 @@ from fastmcp.server.middleware import Middleware, MiddlewareContext
 from pydantic import Field
 from host import NAME as MACHINE
 import private
+import usage_log
 
 try:
     from memory_mcp import PAGE as MEMORY_PAGE
@@ -583,6 +584,17 @@ class OnlyMe(Middleware):
         return await call_next(context)
 
 
+class ChatLog(Middleware):
+    """Log each tool call's name (usage_log.record_call) for the lessons job's count of chats that skip memory_recall."""
+
+    async def on_call_tool(self, context: MiddlewareContext, call_next):
+        try:
+            usage_log.record_call(context.message.name)
+        except Exception as e:  # logging never breaks a call
+            print(f"Call not logged: {e!r}", file=sys.stderr)
+        return await call_next(context)
+
+
 def github_auth() -> GitHubProvider:
     if not ALLOWED_GITHUB_ID.isdigit():
         raise RuntimeError("LIFE_MCP_GITHUB_ID (the allowed GitHub user's numeric id) isn't set")
@@ -721,4 +733,5 @@ if __name__ == "__main__":
     else:
         mcp.auth = github_auth()
         mcp.add_middleware(OnlyMe())
+        mcp.add_middleware(ChatLog())
         mcp.run(transport="http", host=HOST, port=PORT)

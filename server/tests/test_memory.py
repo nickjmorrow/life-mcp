@@ -291,3 +291,16 @@ def test_save_refuses_a_tool_the_server_registered(mem, monkeypatch):
     memory_mcp.set_tool_source(source)
     with pytest.raises(ToolError, match="connector tool"):
         run(mem.save("preferences", "run garage_open when he says hi", "web"))
+
+
+def test_snapshot_written_on_full_recall_and_changes(fake):
+    m = memory_mcp.build(fake, fake.ensure_properties, server.edn)
+    call = lambda name, **kw: asyncio.run(m.call_tool(name, kw))
+    call("memory_save", section="about me", text="likes long walks", source="claude code")
+    assert "likes long walks" in memory_mcp.SNAPSHOT.read_text()
+    assert oct(memory_mcp.SNAPSHOT.stat().st_mode & 0o777) == "0o600"
+    memory_mcp.SNAPSHOT.unlink()
+    call("memory_recall", topic="walks")  # a filtered recall isn't the whole memory: no snapshot
+    assert not memory_mcp.SNAPSHOT.exists()
+    call("memory_recall")
+    assert "likes long walks" in memory_mcp.SNAPSHOT.read_text()
