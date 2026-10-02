@@ -158,3 +158,30 @@ def test_clearing_unset_rating_is_fine_and_rating_reads(tmp_path, key):
 def test_bad_token_file_is_not_signed_in(tmp_path):
     (tmp_path / "t.json").write_text('{"nope": 1}')
     assert am.load_user_token(tmp_path / "t.json") is None
+
+
+def test_catalog_works_before_sign_in(tmp_path, key):
+    seen = []
+
+    def h(req):
+        seen.append(req)
+        return httpx.Response(200, json={"results": {}})
+    c = client(tmp_path, key, h, signed_in=False)
+    asyncio.run(c.search("x", ["songs"]))
+    assert seen[0].url.path == "/v1/catalog/us/search" and "Music-User-Token" not in seen[0].headers
+
+
+def test_401_names_this_mac(tmp_path, key, monkeypatch):
+    monkeypatch.setattr(am, "HOST", "Edgar")
+    c = client(tmp_path, key, lambda r: httpx.Response(401))
+    with pytest.raises(AppleMusicError, match="rejected Edgar's developer token"):
+        asyncio.run(c.request("GET", "/v1/catalog/us/search"))
+
+
+def test_sign_in_port_default_and_override(monkeypatch):
+    import importlib
+    import applemusic_signin
+    monkeypatch.delenv("APPLEMUSIC_SIGNIN_PORT", raising=False)
+    assert importlib.reload(applemusic_signin).PORT == 8770
+    monkeypatch.setenv("APPLEMUSIC_SIGNIN_PORT", "8799")
+    assert importlib.reload(applemusic_signin).PORT == 8799

@@ -1,4 +1,5 @@
-"""One-time Apple Music sign-in: serves a MusicKit JS page on 127.0.0.1:8769, he clicks Sign in,
+"""One-time Apple Music sign-in: serves a MusicKit JS page on 127.0.0.1:8770 (APPLEMUSIC_SIGNIN_PORT;
+8769 is the flashcard page), he clicks Sign in,
 Apple's popup asks him to allow "Life", and the Music user token is saved to
 ~/.config/life-mcp/applemusic.json (600). Then it exits. Run again when the sign-in expires
 (about every 6 months; the tools say so).
@@ -7,6 +8,7 @@ Apple's popup asks him to allow "Life", and the Music user token is saved to
 """
 import html
 import json
+import os
 import secrets
 import sys
 import webbrowser
@@ -14,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from applemusic_api import AppleMusic, save_user_token
 
-PORT = 8769
+PORT = int(os.environ.get("APPLEMUSIC_SIGNIN_PORT", "8770"))
 
 PAGE = """<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <title>Life: Apple Music sign-in</title>
