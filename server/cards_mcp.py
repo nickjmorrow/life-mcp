@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from pathlib import Path
 from typing import Annotated, Literal
 
 from fastmcp import FastMCP
@@ -19,6 +20,8 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 import fsrs
+import private
+import usage_log
 
 CARDS_QUERY = """[:find ?b ?title ?page ?state ?due
  :where [?t :db/ident :logseq.class/Card] [?b :block/tags ?t] [?b :block/title ?title]
@@ -46,6 +49,28 @@ PageArg = Annotated[str | None, Field(description="Only this page's cards (e.g. 
 ChapterArg = Annotated[str | None, Field(
     description="Only cards under this chapter or heading: 'ch 5' (or 'chapter 5', '5') matches the heading 'ch 5 - …';"
                 " other text matches any heading containing it, e.g. 'replication'")]
+
+
+SKILL = "flashcard-review"
+SKILL_MD = private.DIR / "skills" / SKILL / "SKILL.md"
+_last_logged = 0.0
+
+
+def skill_text(path: Path = SKILL_MD) -> str:
+    """The flashcard-review skill's body (no frontmatter). It rides in cards_next's description, because claude.ai
+    finds these tools by tool search and often never loads the skill on its own."""
+    try:
+        return re.sub(r"\A---\n.*?\n---\n", "", path.read_text(), flags=re.S).strip()
+    except OSError:
+        return ""
+
+
+def log_skill_use() -> None:
+    """Count the skill as loaded for the lessons job's usage review, at most once per 30 minutes (one session)."""
+    global _last_logged
+    if time.time() - _last_logged > 1800:
+        _last_logged = time.time()
+        usage_log.record("skill_load", skill=SKILL)
 
 
 def now_ms() -> int:
@@ -160,9 +185,18 @@ def _chapter_key(name: str):
     return (int(m.group(1)) if m else 10**6, name)
 
 
-def build(cli, clock=now_ms) -> FastMCP:
+NEXT_DOC = """The next flashcard to review: ONLY its front and id. Read just the front to Nicholas and wait for his
+answer. Due cards come first, then new ones. A topic or chapter he names ('ch 5', 'replication') goes in `chapter`.
+If his answer is right, say only 'Yep.', rate it good and read the next front; read the back (from cards_answer)
+only when he's wrong or doesn't know."""
+
+
+def build(cli, clock=now_ms, skill: str | None = None) -> FastMCP:
     mcp = FastMCP("Cards")
     deck = Deck(cli, clock)
+    skill = skill_text() if skill is None else skill
+    next_doc = NEXT_DOC + (f"\n\nRun the session exactly like this (his {SKILL} skill; no need to skill_load it):\n\n{skill}"
+                           if skill else "")
 
     def card_line(c: dict, left: str) -> str:
         where = f"{c['page']} › {c['chapter']}" if c.get("chapter") else c["page"]
@@ -186,16 +220,13 @@ def build(cli, clock=now_ms) -> FastMCP:
         lines += [f"{'  ' if ' › ' in g else ''}- {g}: {d} due, {n} new, {l} later" for g in order for d, n, l in [groups[g]]]
         return "\n".join(lines)
 
-    @mcp.tool(annotations=READ)
+    @mcp.tool(annotations=READ, description=next_doc)
     async def cards_next(
         page: PageArg = None,
         chapter: ChapterArg = None,
         include_new: Annotated[bool, Field(description="Show a new card when nothing is due")] = True,
     ) -> str:
-        """The next flashcard to review: ONLY its front and id. Read just the front to Nicholas and wait for his
-        answer. Due cards come first, then new ones. A topic or chapter he names ('ch 5', 'replication') goes in
-        `chapter`. If his answer is right, say only 'Yep.', rate it good and read the next front; read the back
-        (from cards_answer) only when he's wrong or doesn't know. Follow the flashcard-review skill."""
+        log_skill_use()
         due, new, later = deck.split(await deck.cards(page, chapter))
         queue = due + (new if include_new else [])
         if not queue:
