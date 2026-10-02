@@ -1,11 +1,15 @@
 """The file-backed memory store: topic files in a local git repo. Every name and fact here is made up."""
+import fcntl
 import json
+import os
 import signal
 import stat
 import subprocess
 import sys
 import textwrap
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -842,6 +846,162 @@ def test_commit_files_and_saves_from_two_processes(tmp_path):
     assert (root / "bundle.md").read_text() == f"version {len(FACTS) - 1}\n"
     assert commit_count(root) == 2 * len(FACTS)  # every save and every bundle is its own commit
     assert git(root, "status", "--porcelain") == ""
+
+
+@contextmanager
+def deadlock_guard(seconds=10):
+    """A deadlock would otherwise hang the whole suite: fail the test instead."""
+    def stuck(signum, frame):
+        raise TimeoutError("deadlocked")
+
+    previous = signal.signal(signal.SIGALRM, stuck)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def test_commit_files_runs_a_builder_inside_the_lock(tmp_store):
+    root = tmp_store.root
+    seen = []
+
+    def build():
+        fd = os.open(root / ".lock", os.O_RDWR)  # another open file: it conflicts with the store's own hold
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            seen.append("lock was free")
+        except BlockingIOError:
+            seen.append("lock was held")
+        finally:
+            os.close(fd)
+        return {"bundle.md": "built under the lock\n"}
+
+    assert tmp_store.commit_files(build, "bundle: rebuilt") is True
+    assert seen == ["lock was held"]
+    assert (root / "bundle.md").read_text() == "built under the lock\n"
+    assert git_log(root) == ["bundle: rebuilt"] and git(root, "status", "--porcelain") == ""
+    assert tmp_store.commit_files(build, "bundle: rebuilt again") is False  # same text: no second commit
+    assert git_log(root) == ["bundle: rebuilt"]
+
+
+def test_a_builder_cannot_put_an_older_bundle_over_a_newer_one(tmp_path):
+    """Why the builder runs under the lock: a bundle built from memory and committed after another write committed a
+    newer one would put the older one back. Here one store saves while another keeps rebuilding the whole time; the
+    bundle that is left must describe the final state. (Built before taking the lock, it ends stale every time.)"""
+    root = fixture_root(tmp_path)
+
+    def bundle(store):
+        return {"bundle.md": f"home has {len(store.entries('home'))} entries\n"}
+
+    writer, rebuilder = MemoryStore(root, on_change=bundle), MemoryStore(root)
+    errors = []
+
+    def save_facts():
+        try:
+            for fact in FACTS:
+                writer.save(fact, "home", "phone", similar="add")
+        except Exception as e:
+            errors.append(e)
+
+    saving = threading.Thread(target=save_facts)
+
+    def rebuild():
+        try:
+            while saving.is_alive():
+                rebuilder.commit_files(lambda: bundle(rebuilder), "bundle: rebuilt")
+        except Exception as e:
+            errors.append(e)
+
+    rebuilding = threading.Thread(target=rebuild)
+    with deadlock_guard(60):
+        saving.start()
+        rebuilding.start()
+        saving.join()
+        rebuilding.join()
+    assert errors == []
+    assert (root / "bundle.md").read_text() == f"home has {len(FACTS)} entries\n"
+    assert git(root, "status", "--porcelain") == ""
+
+
+@pytest.mark.parametrize("rel", ["core.md", "CORE.md", "archive.md", "topics/home.md", "../x", ".git/config", ".lock",
+                                 ".ids.json", ""])
+def test_a_builders_files_follow_the_same_path_rules(tmp_path, rel):
+    store = MemoryStore(fixture_root(tmp_path))
+    with pytest.raises(MemoryError_, match="commit_files"):
+        store.commit_files(lambda: {"bundle.md": "built\n", rel: "x"}, "bundle: rebuilt")  # all or nothing
+    assert not (store.root / "bundle.md").exists() and not (tmp_path / "x").exists()
+    assert not (store.root / ".git").exists()
+
+
+@pytest.mark.parametrize("made", [None, "bundle.md", [("bundle.md", "x")], {"bundle.md": 5}, {7: "x"}])
+def test_a_builder_must_return_files(tmp_path, made):
+    store = MemoryStore(fixture_root(tmp_path))
+    with pytest.raises(MemoryError_):
+        store.commit_files(lambda: made, "bundle: rebuilt")
+    assert not (store.root / ".git").exists() and not (store.root / "bundle.md").exists()
+
+
+def test_a_builder_that_returns_nothing_changes_nothing(tmp_store):
+    assert tmp_store.commit_files(lambda: {}, "bundle: nothing to say") is False
+    assert not (tmp_store.root / ".git").exists()
+
+
+def test_a_failing_builder_writes_nothing_and_lets_go_of_the_lock(tmp_store):
+    def broken():
+        raise ValueError("the builder broke")
+
+    with deadlock_guard():
+        with pytest.raises(ValueError, match="builder broke"):
+            tmp_store.commit_files(broken, "bundle: rebuilt")
+        assert tmp_store.commit_files({"bundle.md": "x\n"}, "bundle: rebuilt") is True  # the lock is free again
+    assert git_log(tmp_store.root) == ["bundle: rebuilt"]
+
+
+def test_a_builder_may_read_the_store_but_not_write_to_it(tmp_store):
+    tmp_store.save(FACTS[0], "home", "phone")
+
+    def read_only():
+        return {"bundle.md": f"{[e.text for e in tmp_store.entries('home')]}\n"}
+
+    def writes():
+        tmp_store.save(FACTS[1], "home", "phone")
+        return {"bundle.md": "x\n"}
+
+    with deadlock_guard():
+        assert tmp_store.commit_files(read_only, "bundle: rebuilt") is True
+        with pytest.raises(RuntimeError, match="inside another"):
+            tmp_store.commit_files(writes, "bundle: rebuilt")
+    assert (tmp_store.root / "bundle.md").read_text() == f"{[FACTS[0]]}\n"
+    assert ids(tmp_store, "home") == ["o1"]
+
+
+def test_a_builders_message_is_checked_too(tmp_store):
+    with pytest.raises(MemoryError_, match="commit message"):
+        tmp_store.commit_files(lambda: {"bundle.md": "x\n"}, " ")
+    assert not (tmp_store.root / "bundle.md").exists()
+
+
+def test_last_commit_names_the_newest_commit_that_changed_a_file(tmp_store):
+    root = tmp_store.root
+    assert tmp_store.last_commit("bundle.md") is None  # no repo yet
+    tmp_store.save(FACTS[0], "home", "phone")
+    assert tmp_store.last_commit("bundle.md") is None  # a repo, but the file was never committed
+    tmp_store.commit_files({"bundle.md": "x\n"}, "bundle: first")
+    first = tmp_store.head()
+    tmp_store.save(FACTS[1], "home", "phone")  # a later commit that leaves the bundle alone
+    sha, when = tmp_store.last_commit("bundle.md")
+    assert sha == first and tmp_store.head() != first
+    assert when == int(git(root, "show", "-s", "--format=%ct", first))
+    assert tmp_store.last_commit("topics/home.md")[0] == tmp_store.head()
+    tmp_store.commit_files({"bundle.md": "y\n"}, "bundle: changed")
+    assert tmp_store.last_commit("bundle.md")[0] == tmp_store.head()
+
+
+def test_last_commit_without_git_is_none(plain_store):
+    plain_store.commit_files({"bundle.md": "x\n"}, "bundle: rebuilt")
+    assert plain_store.last_commit("bundle.md") is None
 
 
 # --- update, remove, ids --------------------------------------------------------------------------------------

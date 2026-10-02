@@ -29,8 +29,8 @@ atomically; if the commit fails, the files go back as they were. Reading takes n
 anything edited by hand, too. git runs apart from the user's own setup: no global or system git config, no GIT_*
 variables, a fixed author, no signing, and commits skip hooks.
 
-`commit_files` writes and commits files made from memory (a bundle) under the same lock; `on_change` can add such
-files to a write's own commit.
+`commit_files` writes and commits files made from memory (a bundle) under the same lock (given a function instead of
+the files, it calls it once it holds the lock); `on_change` can add such files to a write's own commit.
 
 Text is flattened to one line and refused if it has invisible control characters. A caller's `guard` sees every new
 text before anything is written. Refusals raise MemoryError_, worded for the model to read.
@@ -600,6 +600,15 @@ class MemoryStore:
         proc = self._git("rev-parse", "--verify", "-q", "HEAD", check=False)
         return proc.stdout.strip() if proc.returncode == 0 else ""
 
+    def last_commit(self, rel: str) -> tuple[str, int] | None:
+        """(sha, commit time in seconds since 1970) of the newest commit that changed this file (a path relative to the
+        root), or None if none did, or there's no repo."""
+        if not (self.root / ".git").exists():
+            return None
+        proc = self._git("log", "-1", "--format=%H %ct", "--", rel, check=False)
+        found = proc.stdout.split()
+        return (found[0], int(found[1])) if proc.returncode == 0 and len(found) == 2 else None
+
     # -- writing --
 
     def save(self, text: str, topic: str, source: str, under: str | None = None, review: str | None = None,
@@ -648,26 +657,29 @@ class MemoryStore:
         details follow their parent unless listed apart. Ids don't change. A group may reuse the topic's own name."""
         return self._write(lambda tx: self._split(tx, topic, groups, about))
 
-    def commit_files(self, files: dict[str, str], message: str) -> bool:
+    def commit_files(self, files: dict[str, str] | Callable[[], dict[str, str]], message: str) -> bool:
         """Write files made from memory (a rebuilt bundle, say; paths relative to the root) and commit them, under the
-        same lock as a memory write. Returns True if it committed: False if nothing changed, or without git
+        same lock as a memory write. `files` is a dict, or a function that returns one: the function is called once
+        the lock is held, so what it builds can't be older than a write that commits before this call does (it may
+        read the store, not write to it). Returns True if it committed: False if nothing changed, or without git
         (commit=False, where the files are still written). Memory's own files (core, topics, archive), git's
         and the store's bookkeeping can't go through here; any refused path refuses the whole call. on_change
         doesn't run."""
-        for rel, text in files.items():
-            if not self._derived(rel):
-                raise MemoryError_(f"'{rel}' can't be written through commit_files: it's for files made from memory, "
-                                   "like bundle.md, inside the memory folder, not for core, topics, the archive or "
-                                   "git's own files.")
-            if not isinstance(text, str):
-                raise MemoryError_(f"'{rel}' needs text to write.")
-        if not files:
-            return False
+        build = files if callable(files) else None
+        if build is None:  # a dict is checked before waiting for the lock
+            self._check_derived(files)
+            if not files:
+                return False
         subject = _clean(message, "commit message")
         with self._exclusive():
+            made = build() if build is not None else files
+            if build is not None:  # what a function built is checked the same way, under the lock
+                self._check_derived(made)
+                if not made:
+                    return False
             undo: list[tuple[Path, str | None]] = []
             try:
-                changed = [self._put(rel, text, undo) for rel, text in files.items()]
+                changed = [self._put(rel, text, undo) for rel, text in made.items()]
                 if not any(changed) or not self.commit:
                     return False
                 return self._commit(subject)
@@ -1014,6 +1026,18 @@ class MemoryStore:
                 print(f"Memory: ignoring on_change file {rel!r}: it isn't text for a file made from memory inside "
                       "the memory folder.", file=sys.stderr)
         return good
+
+    def _check_derived(self, files: object) -> None:
+        """Refuse, all or nothing, anything but a dict of relative path to text for files made from memory."""
+        if not isinstance(files, dict):
+            raise MemoryError_("commit_files needs a dict of path to text, or a function that returns one.")
+        for rel, text in files.items():
+            if not self._derived(rel):
+                raise MemoryError_(f"'{rel}' can't be written through commit_files: it's for files made from memory, "
+                                   "like bundle.md, inside the memory folder, not for core, topics, the archive or "
+                                   "git's own files.")
+            if not isinstance(text, str):
+                raise MemoryError_(f"'{rel}' needs text to write.")
 
     def _derived(self, rel: object) -> bool:
         """Is this a path for a file made from memory (a bundle, say)? Relative, inside the folder, and none of memory's
