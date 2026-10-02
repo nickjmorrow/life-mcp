@@ -29,6 +29,9 @@ atomically; if the commit fails, the files go back as they were. Reading takes n
 anything edited by hand, too. git runs apart from the user's own setup: no global or system git config, no GIT_*
 variables, a fixed author, no signing, and commits skip hooks.
 
+`commit_files` writes and commits files made from memory (a bundle) under the same lock; `on_change` can add such
+files to a write's own commit.
+
 Text is flattened to one line and refused if it has invisible control characters. A caller's `guard` sees every new
 text before anything is written. Refusals raise MemoryError_, worded for the model to read.
 """
@@ -645,6 +648,33 @@ class MemoryStore:
         details follow their parent unless listed apart. Ids don't change. A group may reuse the topic's own name."""
         return self._write(lambda tx: self._split(tx, topic, groups, about))
 
+    def commit_files(self, files: dict[str, str], message: str) -> bool:
+        """Write files made from memory (a rebuilt bundle, say; paths relative to the root) and commit them, under the
+        same lock as a memory write. Returns True if it committed: False if nothing changed, or without git
+        (commit=False, where the files are still written). Memory's own files (core, topics, archive), git's
+        and the store's bookkeeping can't go through here; any refused path refuses the whole call. on_change
+        doesn't run."""
+        for rel, text in files.items():
+            if not self._derived(rel):
+                raise MemoryError_(f"'{rel}' can't be written through commit_files: it's for files made from memory, "
+                                   "like bundle.md, inside the memory folder, not for core, topics, the archive or "
+                                   "git's own files.")
+            if not isinstance(text, str):
+                raise MemoryError_(f"'{rel}' needs text to write.")
+        if not files:
+            return False
+        subject = _clean(message, "commit message")
+        with self._exclusive():
+            undo: list[tuple[Path, str | None]] = []
+            try:
+                changed = [self._put(rel, text, undo) for rel, text in files.items()]
+                if not any(changed) or not self.commit:
+                    return False
+                return self._commit(subject)
+            except BaseException:
+                self._rollback(undo)
+                raise
+
     # -- reading helpers --
 
     def _path(self, name: str) -> Path:
@@ -892,17 +922,24 @@ class MemoryStore:
     def _write(self, work: Callable[[_Tx], str]) -> str:
         """Run one change under the lock: `work` reads and edits documents and returns the reply, then every changed
         file is written and committed together."""
+        with self._exclusive():
+            tx = _Tx(self)
+            tx.highest()  # before the work changes anything
+            reply = work(tx)
+            self._flush(tx)
+            return reply
+
+    @contextmanager
+    def _exclusive(self):
+        """The write lock. A write started while this thread already holds it (from on_change) is an error, not a
+        deadlock."""
         if getattr(self._busy, "on", False):
             raise RuntimeError("A memory write can't start inside another one: on_change may read the store, "
                                "but not write to it.")
         with self._locked():
             self._busy.on = True
             try:
-                tx = _Tx(self)
-                tx.highest()  # before the work changes anything
-                reply = work(tx)
-                self._flush(tx)
-                return reply
+                yield
             finally:
                 self._busy.on = False
 
@@ -930,29 +967,35 @@ class MemoryStore:
             if self.commit:
                 self._commit(tx.message)
         except BaseException:
-            for path, old in reversed(undo):  # put every file back as it was
-                try:
-                    if old is None:
-                        path.unlink(missing_ok=True)
-                    else:
-                        _write_atomic(path, old)
-                except OSError as e:
-                    print(f"Memory: couldn't undo a failed write to {path}: {e!r}", file=sys.stderr)
+            self._rollback(undo)
             raise
 
-    def _put(self, rel: str, text: str | None, undo: list[tuple[Path, str | None]]) -> None:
+    def _put(self, rel: str, text: str | None, undo: list[tuple[Path, str | None]]) -> bool:
+        """Write (or, for None, delete) one file, noting what it held so a failure can put it back. True if it
+        changed."""
         path = self.root / rel
         try:
             old: str | None = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             old = None
         if old == text:
-            return
+            return False
         undo.append((path, old))
         if text is None:
             path.unlink()
         else:
             _write_atomic(path, text)
+        return True
+
+    def _rollback(self, undo: list[tuple[Path, str | None]]) -> None:
+        for path, old in reversed(undo):  # put every file back as it was
+            try:
+                if old is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    _write_atomic(path, old)
+            except OSError as e:
+                print(f"Memory: couldn't undo a failed write to {path}: {e!r}", file=sys.stderr)
 
     def _extra_files(self) -> list[tuple[str, str]]:
         """What on_change adds to this commit. A broken hook or a bad path never blocks the memory change itself."""
@@ -965,21 +1008,29 @@ class MemoryStore:
             return []
         good = []
         for rel, text in files.items():
-            if isinstance(rel, str) and isinstance(text, str) and self._inside(rel):
+            if isinstance(text, str) and self._derived(rel):
                 good.append((rel, text))
             else:
-                print(f"Memory: ignoring on_change file {rel!r}: it isn't text for a file inside the memory folder.",
-                      file=sys.stderr)
+                print(f"Memory: ignoring on_change file {rel!r}: it isn't text for a file made from memory inside "
+                      "the memory folder.", file=sys.stderr)
         return good
 
-    def _inside(self, rel: str) -> bool:
-        """A relative path within the folder that isn't git's or the store's own."""
+    def _derived(self, rel: object) -> bool:
+        """Is this a path for a file made from memory (a bundle, say)? Relative, inside the folder, and none of memory's
+        own files (core, the archive, topics) or the bookkeeping (git's files, the lock, the id record). Names are
+        compared without regard to case, since the disk may not tell core.md from CORE.md."""
+        if not isinstance(rel, str):
+            return False
         path = Path(rel)
-        return bool(path.parts) and not path.is_absolute() and ".." not in path.parts \
-            and path.parts[0] != ".git" and path.parts not in ((_LOCK,), (_MARKS,)) \
-            and (self.root / path).resolve().is_relative_to(self.root.resolve())
+        parts = tuple(p.lower() for p in path.parts)
+        if not parts or path.is_absolute() or ".." in parts:
+            return False
+        if parts[0] in (".git", "topics") or parts in ((_LOCK,), (_MARKS,), ("core.md",), ("archive.md",)):
+            return False
+        return (self.root / path).resolve().is_relative_to(self.root.resolve())
 
-    def _commit(self, message: str) -> None:
+    def _commit(self, message: str) -> bool:
+        """Commit whatever is on disk (`git add -A`), starting the repo if there isn't one. True if it committed."""
         if not (self.root / ".git").exists():
             self._git("init", "-q", "-b", "main")
         exclude = self.root / ".git" / "info" / "exclude"  # keep the lock and temp files out of the repo
@@ -991,8 +1042,9 @@ class MemoryStore:
                 f.write(("\n" if have and not have.endswith("\n") else "") + "\n".join(missing) + "\n")
         self._git("add", "-A")
         if self._git("diff", "--cached", "--quiet", check=False).returncode == 0:
-            return  # nothing changed
+            return False  # nothing changed
         self._git("commit", "-q", "--no-verify", "-m", message)
+        return True
 
     def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
         proc = subprocess.run(["git", "-c", "commit.gpgsign=false", "-c", f"core.excludesFile={os.devnull}", *args],

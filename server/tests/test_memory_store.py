@@ -283,7 +283,8 @@ def test_empty_text_refused(tmp_store):
         tmp_store.update("c1", text="  ")
 
 
-@pytest.mark.parametrize("source", ["", "phone, web", "(phone)", "phone)", "x" * 41, "review 2026-11-05", "review never"])
+@pytest.mark.parametrize("source", ["", "phone, web", "(phone)", "phone)", "x" * 41,
+                                    "review 2026-11-05", "review never"])
 def test_bad_source_refused(tmp_store, source):
     with pytest.raises(MemoryError_, match="source"):
         tmp_store.save("has a dog, Biscuit", "home", source)
@@ -680,22 +681,28 @@ def test_on_change_result_that_isnt_files_is_ignored(tmp_path, capsys, result):
 def test_on_change_paths_must_stay_inside_the_repo(tmp_path, capsys):
     root = fixture_root(tmp_path)
     absolute = tmp_path / "abs-outside.md"
-    store = MemoryStore(root, on_change=lambda s: {"../outside.md": "x", str(absolute): "y",
-                                                    ".git/config": "z", "ok.md": "fine\n"})
+    store = MemoryStore(root, on_change=lambda s: {"../outside.md": "x", str(absolute): "y", ".git/config": "z",
+                                                    "core.md": "not memory", "topics/health.md": "not memory",
+                                                    "ok.md": "fine\n"})
     store.save("has a dog, Biscuit", "home", "phone")
     assert (root / "ok.md").read_text() == "fine\n"
     assert not (tmp_path / "outside.md").exists() and not absolute.exists()
     assert (root / ".git" / "config").read_text() != "z"  # git's own file, untouched
+    assert "not memory" not in (root / "core.md").read_text() + (root / "topics" / "health.md").read_text()
     assert "outside.md" in capsys.readouterr().err
 
 
-def test_on_change_cannot_start_another_write(tmp_path):
+@pytest.mark.parametrize("nested", ["save", "commit_files"])
+def test_on_change_cannot_start_another_write(tmp_path, nested):
     seen = []
     holder = {}
 
     def on_change(store):
         try:
-            holder["store"].save("sneaky second save", "home", "phone")
+            if nested == "save":
+                holder["store"].save("sneaky second save", "home", "phone")
+            else:
+                holder["store"].commit_files({"sneaky.md": "x\n"}, "sneaky")
         except RuntimeError as e:
             seen.append(str(e))
         return {}
@@ -714,6 +721,127 @@ def test_on_change_cannot_start_another_write(tmp_path):
         signal.signal(signal.SIGALRM, previous)
     assert len(seen) == 1 and "inside another" in seen[0]
     assert [e.text for e in store.entries("home")] == ["has a dog, Biscuit"]
+    assert not (store.root / "sneaky.md").exists()
+
+
+# --- commit_files ---------------------------------------------------------------------------------------------
+
+
+def test_commit_files_writes_and_commits_once(tmp_store):
+    root = tmp_store.root
+    tmp_store.save(FACTS[0], "home", "phone")  # the repo exists, with one commit
+    assert tmp_store.commit_files({"bundle.md": "rules and facts\n", "views/summary.txt": "same\n"},
+                                  "bundle: rebuilt") is True
+    assert git_log(root)[0] == "bundle: rebuilt" and commit_count(root) == 2
+    assert files_in_head(root) == {"bundle.md", "views/summary.txt"}
+    assert (root / "bundle.md").read_text() == "rules and facts\n"
+    assert stat.S_IMODE((root / "bundle.md").stat().st_mode) == 0o600
+    assert git(root, "status", "--porcelain") == ""
+
+
+def test_commit_files_does_nothing_when_nothing_changed(tmp_store):
+    root = tmp_store.root
+    assert tmp_store.commit_files({"bundle.md": "x\n"}, "bundle: rebuilt") is True
+    before = git_log(root)
+    assert tmp_store.commit_files({"bundle.md": "x\n"}, "bundle: rebuilt again") is False
+    assert tmp_store.commit_files({}, "bundle: nothing to say") is False
+    assert git_log(root) == before
+    assert tmp_store.commit_files({"bundle.md": "y\n"}, "bundle: changed") is True
+    assert git_log(root) == ["bundle: changed", *before]
+
+
+def test_commit_files_leaves_other_pending_edits_alone_while_its_files_are_unchanged(tmp_store):
+    root = tmp_store.root
+    tmp_store.save(FACTS[0], "home", "phone")
+    tmp_store.commit_files({"bundle.md": "x\n"}, "bundle: first")
+    notes = root / "topics" / "health.md"
+    notes.write_text(notes.read_text() + "\n- [h1] added by hand in an editor (2026-10-01, claude code)\n")
+    before = git_log(root)
+    assert tmp_store.commit_files({"bundle.md": "x\n"}, "bundle: again") is False  # its own files didn't change
+    assert git_log(root) == before and "topics/health.md" in git(root, "status", "--porcelain")
+    # when the bundle does change, the edit it was built from goes in the same commit, as with any write
+    assert tmp_store.commit_files({"bundle.md": "y\n"}, "bundle: changed") is True
+    assert files_in_head(root) == {"bundle.md", "topics/health.md"} and git(root, "status", "--porcelain") == ""
+
+
+def test_commit_files_refuses_memorys_own_files_and_paths_outside(tmp_path):
+    store = MemoryStore(fixture_root(tmp_path))
+    root = store.root
+    absolute = str(tmp_path / "abs-outside.md")
+    for rel in ("core.md", "CORE.md", "./core.md", "archive.md", "topics/home.md", "Topics/new.md", "topics",
+                "../x", "a/../../x", absolute, ".git/config", ".GIT/hooks/post-commit", ".lock", ".ids.json", "", "."):
+        with pytest.raises(MemoryError_, match="commit_files"):
+            store.commit_files({"bundle.md": "built\n", rel: "x"}, "bundle: rebuilt")  # all or nothing
+        assert not (root / "bundle.md").exists()
+    with pytest.raises(MemoryError_, match="text"):
+        store.commit_files({"bundle.md": 5}, "bundle: rebuilt")  # type: ignore[dict-item]
+    assert not (tmp_path / "x").exists() and not (tmp_path / "abs-outside.md").exists()
+    assert not (root / ".git").exists() and lines_of(root, "core") == [f"# core (c): {TOPICS['core'][1]}"]
+
+
+def test_commit_files_message_is_one_line_of_text(tmp_store):
+    for bad in ("", "  \n "):
+        with pytest.raises(MemoryError_, match="commit message"):
+            tmp_store.commit_files({"bundle.md": "x\n"}, bad)
+    assert not (tmp_store.root / "bundle.md").exists()
+    tmp_store.commit_files({"bundle.md": "x\n"}, "bundle:  rebuilt\nfor a new rule")
+    assert git_log(tmp_store.root) == ["bundle: rebuilt for a new rule"]
+
+
+def test_commit_files_without_git_writes_and_says_it_didnt_commit(tmp_path):
+    store = MemoryStore(tmp_path / "memory", commit=False)
+    assert store.commit_files({"bundle.md": "x\n"}, "bundle: rebuilt") is False
+    assert (tmp_path / "memory" / "bundle.md").read_text() == "x\n"
+    assert not (tmp_path / "memory" / ".git").exists()
+
+
+def test_commit_files_on_a_new_root_starts_the_repo(tmp_path):
+    root = tmp_path / "deep" / "memory"
+    assert MemoryStore(root).commit_files({"bundle.md": "x\n"}, "bundle: first") is True
+    assert git_log(root) == ["bundle: first"]
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700 and git(root, "status", "--porcelain") == ""
+
+
+def test_commit_files_failure_puts_the_files_back(tmp_store):
+    root = tmp_store.root
+    tmp_store.commit_files({"bundle.md": "old\n"}, "bundle: first")
+    lock = root / ".git" / "index.lock"
+    lock.write_text("")  # a stuck git
+    with pytest.raises(RuntimeError, match="git"):
+        tmp_store.commit_files({"bundle.md": "new\n", "extra.md": "x\n"}, "bundle: second")
+    assert (root / "bundle.md").read_text() == "old\n" and not (root / "extra.md").exists()
+    lock.unlink()
+    assert tmp_store.commit_files({"bundle.md": "new\n"}, "bundle: second") is True
+
+
+def test_commit_files_and_saves_from_two_processes(tmp_path):
+    root = fixture_root(tmp_path)
+    child = textwrap.dedent("""
+        import sys, time
+        sys.path.insert(0, sys.argv[1])
+        from pathlib import Path
+        from memory_store import MemoryStore
+        root, start, kind = Path(sys.argv[2]), float(sys.argv[3]), sys.argv[4]
+        store = MemoryStore(root)
+        facts = sys.argv[5:]
+        while time.time() < start:
+            time.sleep(0.001)
+        for n, fact in enumerate(facts):
+            if kind == "save":
+                assert store.save(fact, "home", "phone", similar="add").startswith("Saved")
+            else:
+                assert store.commit_files({"bundle.md": f"version {n}\\n"}, f"bundle: version {n}") is True
+    """)
+    start = time.time() + 0.7
+    procs = [subprocess.Popen([sys.executable, "-c", child, str(SERVER), str(root), str(start), kind, *FACTS],
+                              stderr=subprocess.PIPE, text=True) for kind in ("save", "bundle")]
+    for proc in procs:
+        _, err = proc.communicate(timeout=120)
+        assert proc.returncode == 0, err
+    assert sorted(ids(MemoryStore(root), "home")) == sorted(f"o{n}" for n in range(1, len(FACTS) + 1))
+    assert (root / "bundle.md").read_text() == f"version {len(FACTS) - 1}\n"
+    assert commit_count(root) == 2 * len(FACTS)  # every save and every bundle is its own commit
+    assert git(root, "status", "--porcelain") == ""
 
 
 # --- update, remove, ids --------------------------------------------------------------------------------------
