@@ -113,3 +113,11 @@ def test_status_per_chapter():
     assert out.splitlines()[1:] == ["- DDIA: 1 due, 1 new, 0 later",
                                     "  - DDIA › ch 5 - replication: 1 due, 0 new, 0 later",
                                     "  - DDIA › ch 50 - extra: 0 due, 1 new, 0 later"]
+
+
+def test_topic_passed_as_page_falls_back_to_headings():
+    mcp = cards_mcp.build(FakeCli(), clock=lambda: NOW)
+    assert "[1] What is a log?" in call(mcp, "cards_next", page="replication")
+    assert "[1]" in call(mcp, "cards_next", page="dd")  # part of a page name
+    with pytest.raises(Exception, match="No flashcards on a page or under a heading"):
+        call(mcp, "cards_next", page="sharding")

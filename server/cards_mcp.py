@@ -33,8 +33,11 @@ TREE_QUERY = """[:find ?b ?parent ?title
 CHILDREN_QUERY = """[:find ?title ?order :in $ ?parent
  :where [?c :block/parent ?parent] [?c :block/title ?title] [?c :block/order ?order]]"""
 INSTRUCTIONS = (
-    " The cards_* tools quiz Nicholas on his Logseq flashcards with spaced repetition: cards_next gives a"
-    " front (read only that, then wait), cards_answer the back, cards_rate takes again/hard/good/easy."
+    " The cards_* tools quiz Nicholas on his Logseq flashcards with spaced repetition. Load the flashcard-review"
+    " skill first (skill_load). In short: start at once with cards_next (pass a named book as page, a chapter or"
+    " topic like 'ch 5' or 'replication' as chapter) and read only the front. When he answers, check it with"
+    " cards_answer silently: if he's right say just 'Yep.', rate good and read the next front; read the back only"
+    " when he's wrong or doesn't know. Never quiz him from search results instead of these tools."
 )
 READ = {"readOnlyHint": True}
 WRITE = {"readOnlyHint": False, "destructiveHint": False}
@@ -86,10 +89,16 @@ class Deck:
         cards = [{"id": b, "front": title, "page": pg, "chapter": None, "card": fsrs.Card.from_logseq(st or None, due)}
                  for b, title, pg, st, due in rows]
         if page:
-            cards = [c for c in cards if c["page"].lower() == page.strip().lower()]
-            if not cards:
-                raise ToolError(f"No flashcards on a page called {page!r}. Use cards_status to see the pages.")
-        if chapter or with_chapters:
+            want = page.strip().lower()
+            on_page = [c for c in cards if c["page"].lower() == want] or [c for c in cards if want in c["page"].lower()]
+            if not on_page and not chapter:
+                # Not a page name: models often pass a topic ("replication") as the page, so try it as a heading.
+                await self._add_chapters(cards)
+                on_page = [c for c in cards if any(_matches(h, page) for h in c["headings"])]
+            if not on_page:
+                raise ToolError(f"No flashcards on a page or under a heading called {page!r}. Use cards_status to see the pages.")
+            cards = on_page
+        if (chapter or with_chapters) and not all("headings" in c for c in cards):
             await self._add_chapters(cards)
         if chapter:
             matched = [c for c in cards if any(_matches(h, chapter) for h in c["headings"])]
@@ -183,8 +192,10 @@ def build(cli, clock=now_ms) -> FastMCP:
         chapter: ChapterArg = None,
         include_new: Annotated[bool, Field(description="Show a new card when nothing is due")] = True,
     ) -> str:
-        """The next flashcard to review: ONLY its front and id. Read the front to Nicholas and wait for him to
-        answer before calling cards_answer. Due cards come first, then new ones."""
+        """The next flashcard to review: ONLY its front and id. Read just the front to Nicholas and wait for his
+        answer. Due cards come first, then new ones. A topic or chapter he names ('ch 5', 'replication') goes in
+        `chapter`. If his answer is right, say only 'Yep.', rate it good and read the next front; read the back
+        (from cards_answer) only when he's wrong or doesn't know. Follow the flashcard-review skill."""
         due, new, later = deck.split(await deck.cards(page, chapter))
         queue = due + (new if include_new else [])
         if not queue:
@@ -196,7 +207,8 @@ def build(cli, clock=now_ms) -> FastMCP:
 
     @mcp.tool(annotations=READ)
     async def cards_answer(card_id: Annotated[int, Field(description="The id from cards_next")]) -> str:
-        """The back of a flashcard (its answer). Call after Nicholas has answered in his head."""
+        """The back of a flashcard (its answer), to check his answer against. Read it aloud only if he got it
+        wrong or doesn't know; if he's right, just say 'Yep.' and move on."""
         c = await deck.find(card_id)
         return f"{c['front']}\n— answer —\n{await deck.back(card_id)}"
 
