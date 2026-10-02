@@ -150,6 +150,7 @@ def test_similar_save_held_until_add_or_replace(tmp_store):
     tmp_store.save("drinks coffee", "core", "phone")
     held = tmp_store.save("no longer drinks coffee", "core", "phone")
     assert held.startswith("Held:") and "[c1]" in held and len(tmp_store.entries("core")) == 1
+    assert "[c1] drinks coffee (core)" in held
     assert "similar='add'" in held and "similar='replace:<id>'" in held
     assert git_log(tmp_store.root) == ["memory: save c1 (phone)"]  # holding wrote nothing
     tmp_store.save("no longer drinks coffee", "core", "phone", similar="replace:c1")
@@ -184,12 +185,14 @@ def test_similar_add_keeps_both(tmp_store):
     assert tmp_store.entries("archive") == []
 
 
-def test_held_message_lists_the_most_similar_entries(tmp_store):
+def test_held_message_lists_the_most_similar_entries_and_where_they_are(tmp_store):
     tmp_store.save("drinks green tea every morning", "home", "phone")
-    tmp_store.save("drinks green tea in the afternoon", "home", "phone", similar="add")
-    held = tmp_store.save("drinks green tea at night", "home", "phone")
-    assert held.startswith("Held: similar entries [o1]") or held.startswith("Held: similar entries [o2]")
-    assert "[o1]" in held and "[o2]" in held and "green tea" in held
+    tmp_store.save("drinks green tea in the afternoon", "health", "phone", similar="add")
+    held = tmp_store.save("drinks green tea at night", "core", "phone")  # every topic is compared
+    assert held.startswith("Held: similar entries [")
+    assert "[o1]" in held and "[h1]" in held and "green tea" in held
+    assert "(home)" in held and "(health)" in held
+    assert ids(tmp_store, "core") == []
 
 
 @pytest.mark.parametrize("similar", ["maybe", "replace:", "replace:zz", "replace:o9", "add please"])
@@ -375,11 +378,31 @@ def test_save_groups_entries_under_headings(tmp_store):
         ("h1", None), ("h3", None), ("h2", "Linear"), ("h4", "Linear"), ("h5", "Hue")]
 
 
-def test_repeats_are_only_compared_within_the_same_group(tmp_store):
-    assert tmp_store.save("uses the same wording", "health", "web", under="Linear").startswith("Saved")
-    assert tmp_store.save("uses the same wording", "health", "web", under="Hue").startswith("Saved")
-    assert tmp_store.save("uses the same wording", "health", "web", under="linear").startswith("Already in memory")
-    assert tmp_store.save("uses the same wording", "health", "web").startswith("Saved")  # no group: its own scope
+def test_similar_entries_in_other_groups_and_topics_are_held_and_named(tmp_store):
+    assert tmp_store.save("uses the same wording", "health", "web", under="Linear").startswith("Saved [h1]")
+    held = tmp_store.save("uses the same wording", "home", "web", under="Hue")  # another topic and another group
+    assert held.startswith("Held: similar entries [h1] uses the same wording (health, under Linear).")
+    held = tmp_store.save("uses the same wording", "health", "web")  # same topic, no group
+    assert held.startswith("Held:") and "[h1]" in held and "(health, under Linear)" in held
+    assert tmp_store.save("uses the same wording", "home", "web", under="Hue", similar="add").startswith("Saved [o1]")
+    assert ids(tmp_store, "home") == ["o1"] and ids(tmp_store, "health") == ["h1"]
+
+
+def test_an_exact_repeat_is_only_skipped_in_the_same_group(tmp_store):
+    tmp_store.save("uses the same wording", "health", "web", under="Linear")
+    # same group, any case: skipped, even from another topic
+    assert tmp_store.save("uses the same wording", "home", "web", under="linear") == (
+        "Already in memory as [h1]; nothing saved.")
+    # another group: held, and kept once the caller says add
+    assert tmp_store.save("uses the same wording", "home", "web", under="Hue").startswith("Held:")
+    assert tmp_store.save("uses the same wording", "home", "web", under="Hue", similar="add").startswith("Saved [o1]")
+    assert tmp_store.save("uses the same wording", "home", "web", under="hue") == (
+        "Already in memory as [o1]; nothing saved.")
+    # no group is a group of its own for the skip, but similar entries elsewhere still hold it
+    assert tmp_store.save("uses the same wording", "health", "web").startswith("Held:")
+    assert tmp_store.save("uses the same wording", "health", "web", similar="add").startswith("Saved [h2]")
+    assert tmp_store.save("uses the same wording", "core", "web") == "Already in memory as [h2]; nothing saved."
+    assert sorted(ids(tmp_store, "health")) == ["h1", "h2"] and ids(tmp_store, "home") == ["o1"]
 
 
 # --- git and files --------------------------------------------------------------------------------------------

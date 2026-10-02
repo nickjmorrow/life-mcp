@@ -169,6 +169,10 @@ def _ratio(a: str, b: str) -> float:
     return matcher.ratio()
 
 
+def _where(topic: str, e: Entry) -> str:
+    return topic + (f", under {e.under}" if e.under else "")
+
+
 def _snippet(text: str) -> str:
     return text if len(text) <= _SNIPPET else text[:_SNIPPET - 1] + "\u2026"
 
@@ -675,18 +679,21 @@ class MemoryStore:
                 raise MemoryError_(f"similar='replace:{replace_id}' names an entry that isn't in memory. Use an id "
                                    "from the held list, or similar='add' to keep both.") from None
         key = _norm(text)
-        close = []
+        close = []  # (similarity, topic, entry) for everything live that's near this text, in any topic or group
         for other in tx.all_docs(archive=False):
             for r in other.rows:
-                if (r.entry.under or "").lower() != (group or "").lower():
-                    continue  # facts in one group (say, about one app) are only compared with that group's
                 if (ratio := _ratio(key, _norm(r.entry.text))) >= SIMILAR_RATIO:
-                    close.append((ratio, r.entry))
-        close.sort(key=lambda pair: -pair[0])
-        if close and close[0][0] >= SAME_RATIO:
-            return f"Already in memory as [{close[0][1].id}]; nothing saved."
+                    close.append((ratio, other.name, r.entry))
+        close.sort(key=lambda match: -match[0])
+        # An exact repeat is skipped only within its own group (the same sentence under two apps can both be true);
+        # anything similar, anywhere, holds the save until the caller says add or replace.
+        repeats = [e for ratio, _, e in close
+                   if ratio >= SAME_RATIO and (e.under or "").lower() == (group or "").lower()]
+        if repeats:
+            return f"Already in memory as [{repeats[0].id}]; nothing saved."
         if close and not add and not replace_id:
-            shown = ", ".join(f"[{e.id}] {_snippet(e.text)}" for _, e in close[:_HELD_SHOWN])
+            shown = ", ".join(f"[{e.id}] {_snippet(e.text)} ({_where(topic_name, e)})"
+                              for _, topic_name, e in close[:_HELD_SHOWN])
             return (f"Held: similar entries {shown}. Call memory_save again with similar='add' to keep both, "
                     "or similar='replace:<id>' to close the old one.")
 
