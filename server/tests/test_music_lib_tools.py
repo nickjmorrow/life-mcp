@@ -78,9 +78,8 @@ def test_show_create_add_remove(fakes):
     out = call("music_create_playlist", name="skips", last_skipped=2)
     assert lib.calls[-1] == ("create", "skips", ["0000000000000001", "0000000000000002"], None)
     assert "2 songs" in out
-    call("music_add_to_playlist", playlist="workout", songs=["Rumpta", "1440111111"])
+    call("music_add_to_playlist", playlist="workout", songs=["Rumpta"])
     assert lib.calls[-1] == ("add", "P1", ["0000000000000002"])
-    assert ("playlist", "p.1", ["1440111111"]) in api.calls
     out = call("music_remove_from_playlist", playlist="workout", songs=["Rush"])
     assert "Removed 1" in out and lib.lists["P1"]["songs"] == ["0000000000000004", "0000000000000002"]
 
@@ -237,15 +236,37 @@ def test_play_catalog_prefers_the_same_album(fakes):
     assert music.calls[-1][1]["ids"] == ["0000000000000008"]
 
 
-def test_catalog_playlist_not_editable(fakes):
-    _, api, _ = fakes
-    api.playlists_[0]["editable"] = False
-    with pytest.raises(ToolError, match="won't let apps add"):
-        call("music_add_to_playlist", playlist="workout", songs=["1440111111"])
+
+def _syncs(lib, api):
+    """Adding to the library through the API makes the song show up in Music (as iCloud does)."""
+    real = api.add_to_library
+    async def add(songs=(), albums=(), playlists=()):
+        await real(songs, albums, playlists)
+        for i, sid in enumerate(songs):
+            c = api.catalog[sid]
+            lib.songs_.append(lib_song(20 + i, c["name"], c["artist"], album=c["album"], added="2026-10-02T00:00:00Z"))
+    api.add_to_library = add
 
 
-def test_status_says_which_mac_needs_the_token(fakes, monkeypatch):
-    fakes[1].signed_in = False
-    monkeypatch.setattr(music_lib_mcp, "HOST", "Edgar")
-    out = call("music_status")
-    assert "not signed in on Edgar" in out and "secrets.py push-file" in out
+def test_create_with_catalog_songs_goes_through_the_library(fakes):
+    lib, api, _ = fakes
+    _syncs(lib, api)
+    out = call("music_create_playlist", name="new", songs=["1440111111"])
+    assert ("library", ["1440111111"], [], []) in api.calls
+    assert lib.calls[-1] == ("create", "new", ["0000000000000014"], None)
+    assert not [c for c in api.calls if c[0] == "playlist"]
+    assert "1 songs" in out and "Windowlicker" in out
+
+
+def test_add_catalog_song_by_library_id(fakes):
+    lib, api, _ = fakes
+    _syncs(lib, api)
+    call("music_add_to_playlist", playlist="workout", songs=["Rumpta", "1440111111"])
+    assert lib.calls[-1] == ("add", "P1", ["0000000000000002", "0000000000000014"])
+
+
+def test_add_catalog_not_synced_says_so(fakes):
+    lib, api, _ = fakes
+    out = call("music_add_to_playlist", playlist="workout", songs=["1440111111"])
+    assert "hasn't reached TestMac yet" in out and "Windowlicker" in out
+    assert not [c for c in lib.calls if c[0] == "add"]

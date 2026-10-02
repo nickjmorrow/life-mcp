@@ -129,29 +129,42 @@ def _editable(p: dict) -> None:
         raise ToolError(f"'{p['name']}' is a smart playlist; Music fills it by its rules, so it can't be edited.")
 
 
-async def _api_playlist_id(name: str, wait: bool = True) -> str:
-    """The API's id for his library playlist with this name (a new one can take a moment to sync)."""
-    deadline = asyncio.get_running_loop().time() + (SYNC_WAIT_S if wait else 0)
+async def _into_library(wanted: list[dict]) -> tuple[list[str], list[dict]]:
+    """Library ids for catalog songs already added to his library, waiting up to SYNC_WAIT_S for iCloud
+    to bring them to this Mac. Returns (ids in order, catalog songs not there yet). Matched on name,
+    artist and album (another album is another version), newest copy first.
+    Playlists go through the library because a playlist made by script stays local until it has a song."""
+    keys = [(*_key(c["name"], c.get("artist", "")), (c.get("album") or "").lower()) for c in wanted]
+    deadline = asyncio.get_running_loop().time() + SYNC_WAIT_S
     while True:
-        hits = [p for p in await api().library_playlists() if p["name"].lower() == name.lower()]
-        if len(hits) > 1:
-            raise ToolError(f"Apple Music sees {len(hits)} playlists called '{name}'; rename one first.")
-        if hits and not hits[0].get("editable", True):
-            raise ToolError(f"Apple Music won't let apps add catalog songs to '{name}'. Add them to his library "
-                            "first (music_add_to_library), then add them by name.")
-        if hits:
-            return hits[0]["id"]
-        if asyncio.get_running_loop().time() >= deadline:
-            raise ToolError(f"Apple Music hasn't synced the playlist '{name}' yet; try adding catalog songs again in a minute.")
+        newest = {}
+        for s in await lib().songs():
+            k = (*_key(s["name"], s["artist"]), (s["album"] or "").lower())
+            if k not in newest or (s["added"] or "") > (newest[k]["added"] or ""):
+                newest[k] = s
+        if all(k in newest for k in keys) or asyncio.get_running_loop().time() >= deadline:
+            break
         await asyncio.sleep(SYNC_POLL_S)
+    return [newest[k]["id"] for k in keys if k in newest], [c for c, k in zip(wanted, keys) if k not in newest]
 
 
-async def _add_catalog_to_playlist(name: str, ids: list[str]) -> str:
+async def _catalog_songs(ids: list[str]) -> tuple[list[str], list[dict], list[dict]]:
+    """Add catalog songs to his library and wait for them: (library ids, songs added, not there yet)."""
     if not ids:
+        return [], [], []
+    wanted = await api().songs(ids)
+    if not wanted:
+        raise ToolError(f"Apple Music has no songs with those ids ({', '.join(ids)}).")
+    await api().add_to_library(songs=[c["id"] for c in wanted])
+    found, missing = await _into_library(wanted)
+    return found, [c for c in wanted if c not in missing], missing
+
+
+def _not_synced(missing: list[dict]) -> str:
+    if not missing:
         return ""
-    await api().add_to_playlist(await _api_playlist_id(name), ids)
-    found = await api().songs(ids)
-    return "; added from Apple Music: " + ", ".join(f"{c['name']} — {c.get('artist', '')}" for c in found)
+    names = ", ".join(f"{c['name']} — {c.get('artist', '')}" for c in missing)
+    return f" Added to his library but it hasn't reached {HOST} yet, so not in the playlist: {names}; add it again in a minute."
 
 
 # --- listening ------------------------------------------------------------------------------------
@@ -305,9 +318,10 @@ async def music_create_playlist(
     """Make a new playlist, optionally with songs from his library and/or the Apple Music catalog."""
     name = await _new_name(name)
     chosen, catalog, _ = await _pick(songs, last_skipped) if (songs or last_skipped) else ([], [], [])
-    made = await lib().create(name, [s["id"] for s in chosen], description)
-    note = await _add_catalog_to_playlist(made["name"], catalog) if catalog else ""
-    return f"Made playlist '{made['name']}' with {made['count']} songs from his library{note}."
+    ids, added, missing = await _catalog_songs(catalog)
+    made = await lib().create(name, [s["id"] for s in chosen] + ids, description)
+    new = f" (added to his library from Apple Music: {', '.join(c['name'] for c in added)})" if added else ""
+    return f"Made playlist '{made['name']}' with {made['count']} songs{new}.{_not_synced(missing)}"
 
 
 @mcp.tool(annotations=WRITE)
@@ -316,12 +330,13 @@ async def music_add_to_playlist(playlist: Playlist, songs: Songs = None, last_sk
     p = await _playlist(playlist)
     _editable(p)
     chosen, catalog, _ = await _pick(songs, last_skipped)
-    parts = []
-    if chosen:
-        r = await lib().add(p["id"], [s["id"] for s in chosen])
-        parts.append(f"Added {', '.join(label(s) for s in chosen)} to '{r['name']}' ({r['count']} songs now)")
-    note = await _add_catalog_to_playlist(p["name"], catalog)
-    return ("; ".join(parts) + note).lstrip("; ") or "Nothing to add."
+    ids, added, missing = await _catalog_songs(catalog)
+    names = [label(s) for s in chosen] + [f"{c['name']} — {c.get('artist', '')}" for c in added]
+    out = ""
+    if chosen or ids:
+        r = await lib().add(p["id"], [s["id"] for s in chosen] + ids)
+        out = f"Added {', '.join(names)} to '{r['name']}' ({r['count']} songs now)."
+    return (out + _not_synced(missing)).strip() or "Nothing to add."
 
 
 @mcp.tool(annotations=WRITE)
@@ -526,24 +541,13 @@ async def music_play_catalog(
     if not wanted:
         raise ToolError(f"Apple Music has no {kind} {cid}" + (" (is it an album? use kind=album)" if kind == "song" else "") + ".")
     await api().add_to_library(**({"songs": [cid]} if kind == "song" else {"albums": [cid]}))
-    keys = [(*_key(c["name"], c.get("artist", "")), (c.get("album") or "").lower()) for c in wanted]
-    deadline = asyncio.get_running_loop().time() + SYNC_WAIT_S
-    while True:
-        newest = {}
-        for s in await lib().songs():       # the same song on another album is a different version
-            k = (*_key(s["name"], s["artist"]), (s["album"] or "").lower())
-            if k not in newest or (s["added"] or "") > (newest[k]["added"] or ""):
-                newest[k] = s
-        ids = [newest[k]["id"] for k in keys if k in newest]
-        if len(ids) == len(keys) or asyncio.get_running_loop().time() >= deadline:
-            break
-        await asyncio.sleep(SYNC_POLL_S)
+    ids, missing = await _into_library(wanted)
     title = wanted[0]["name"] if kind == "song" else wanted[0].get("album", "the album")
     if not ids:
         return f"Added {title} to his library, but it hasn't reached {HOST} yet; try music_play in a minute."
     speakers = music_mcp.resolve(rooms, await music_mcp._music_speakers())
     await music_mcp.music().play({"kind": "ids", "ids": ids, "name": title}, [s.id for s in speakers], None)
-    missing = len(keys) - len(ids)
+    missing = len(missing)
     return f"Added {title} to his library and playing it ({len(ids)} song{'s' * (len(ids) != 1)}) in " \
            f"{', '.join(s.name for s in speakers)}" + \
            (f"; {missing} more hadn't synced to {HOST} yet" if missing else "")
