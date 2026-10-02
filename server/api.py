@@ -5,8 +5,9 @@ rest of server/ can change. Run your code in this folder's environment (pyprojec
 on the path: `PYTHONPATH=~/Projects/life-mcp/server uv run --project ~/Projects/life-mcp/server python ...`
 (add your own dependencies with --with).
 
-Everything talks to the running Logseq app through its `logseq` CLI, so it raises
-fastmcp.exceptions.ToolError when Logseq isn't running or its graph isn't open.
+Everything but memory() talks to the running Logseq app through its `logseq` CLI, so it raises
+fastmcp.exceptions.ToolError when Logseq isn't running or its graph isn't open. memory() is files on this Mac and
+needs no Logseq.
 
 Importing api doesn't start the connector or mount any tool group.
 """
@@ -15,6 +16,7 @@ from typing import Any
 from fastmcp.exceptions import ToolError
 
 import memory_mcp
+import memory_store
 import people_data
 import server
 
@@ -43,12 +45,15 @@ async def target_args(page: str | None, parent_block_id: int | None, create_page
     return await server.target_args(page, parent_block_id, create_page)
 
 
-def memory() -> memory_mcp.Memory:
-    """A handle on the shared memory page ("Claude memories"), with the same rules the memory_* tools use:
-    await .recall(topic=None), .save(section, text, source, under=None, stage=None) and
-    .update(entry_id, text=None, stage=None, remove=False). Text that reads like a command or holds a
-    secret is refused with a ToolError."""
-    return memory_mcp.Memory(server.cli, server.ensure_properties, server.edn)
+def memory() -> memory_store.MemoryStore:
+    """The shared memory: Markdown topic files in a local git repo, with the same guard the memory_* tools use.
+    Methods (all plain, none async): .topics(), .entries(topic), .render(topic), .search(word),
+    .save(text, topic, source, under=None, review=None, similar=None), .update(entry_id, text=None, remove=False,
+    review=None), .archive(entry_id, why), .move(entry_id, topic), .merge(keep_id, merge_id, text),
+    .split(topic, groups, about), .review_due(today) and .commit_files(files, message). Text that names a
+    connector tool, reads like a command or a rule for Claude, or holds a secret is refused with a ToolError;
+    every other refusal (an unknown topic, a full core, a bad date) is a memory_store.MemoryError_, a ValueError."""
+    return memory_mcp.store()
 
 
 async def people_note(person: str, text: str) -> str:

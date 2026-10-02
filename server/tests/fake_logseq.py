@@ -1,4 +1,4 @@
-"""An in-memory stand-in for server.cli, covering only the calls memory_mcp and the block tools make."""
+"""An in-memory stand-in for server.cli, covering only the calls the block tools and the people tools make."""
 import asyncio
 import re
 

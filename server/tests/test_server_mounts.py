@@ -68,7 +68,7 @@ def test_instructions_are_added_in_order_and_skills_go_first():
     server.mount_all(target, (server.group("memory"), server.group("people"), server.group("skills")))
     text = target.instructions
     assert text.startswith("Nicholas's own skills live in his private agent harness")
-    assert text.index("base.") < text.index("Claude memories") < text.index("people_note")
+    assert text.index("base.") < text.index("memory_recall") < text.index("The people_* tools")
 
 
 def test_mount_all_hands_the_memory_guard_every_tool(monkeypatch):

@@ -134,16 +134,12 @@ def test_skills_mount_puts_index_first():
 
 
 def test_memory_recall_carries_live_skill_index(monkeypatch, tmp_path):
+    # claude.ai always calls memory_recall first, so the skill index rides along with it, read fresh each time.
     import memory_mcp
-    from fake_logseq import FakeLogseq
 
     write(tmp_path, "research", 'name: research\ndescription: d\ntrigger: "/research"')
     monkeypatch.setattr(skills_mcp, "SKILLS_DIR", tmp_path)
-    monkeypatch.setattr(memory_mcp, "RECALL_EXTRA", None)
-    from fastmcp import FastMCP
-    server.mount(server.group("skills"), FastMCP("t"))
-    fake = FakeLogseq()
-    mem = memory_mcp.build(fake, fake.ensure_properties, server.edn)
+    mem = memory_mcp.build()
     assert "research (/research)" in call(mem, "memory_recall")
     write(tmp_path, "buddy", 'name: buddy\ndescription: d\ntrigger: "/buddy"')  # no restart needed
     assert "buddy (/buddy)" in call(mem, "memory_recall")

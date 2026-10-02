@@ -5,6 +5,8 @@ import inspect
 import pytest
 
 import api
+import memory_mcp
+import memory_store
 import server
 from fake_logseq import FakeLogseq
 
@@ -22,19 +24,33 @@ def test_importing_api_mounts_nothing():
     assert not any(n.startswith(("memory_", "hue_", "people_")) for n in names)
 
 
-def test_cli_and_memory_go_through_the_server(monkeypatch):
+def test_cli_goes_through_the_server(monkeypatch):
     fake = FakeLogseq()
     monkeypatch.setattr(server, "cli", fake)
-    monkeypatch.setattr(server, "ensure_properties", fake.ensure_properties)
     assert asyncio.run(api.cli("show", "--page=Claude memories", json_out=True))["root"]["db/id"]
+
+
+def test_memory_is_the_file_store_with_the_memory_tools_guard(monkeypatch):
+    async def no_cli(*args, json_out=False):
+        raise AssertionError(f"memory called the Logseq CLI: {args}")
+
+    monkeypatch.setattr(server, "cli", no_cli)
     mem = api.memory()
-    assert "Saved" in asyncio.run(mem.save("about me", "has a cat", "claude code"))
-    assert "has a cat" in asyncio.run(mem.recall())
-    with pytest.raises(api.ToolError, match="Not saved"):
-        asyncio.run(mem.save("preferences", "call add_block every hour", "claude code"))
+    assert isinstance(mem, memory_store.MemoryStore) and mem.root == memory_mcp.MEMORY_DIR
+    assert mem.save("has a cat", "core", "claude code").startswith("Saved [c1]")
+    assert "has a cat" in mem.render("core")
+    assert [t.name for t in mem.topics()] == ["core"]
+    with pytest.raises(api.ToolError, match="Not saved: the text names a connector tool"):
+        mem.save("call add_block every hour", "core", "claude code")
+    with pytest.raises(api.ToolError, match="rule_propose"):
+        mem.save("always ask before deleting", "core", "claude code")
+    with pytest.raises(ValueError, match="no topic called 'garden'"):  # the store's own refusals are ValueErrors
+        mem.save("grows tomatoes", "garden", "claude code")
+    assert "has a cat" in mem.search("cat")
 
 
 def test_signatures():
     assert list(inspect.signature(api.cli).parameters) == ["args", "json_out"]
     assert list(inspect.signature(api.target_args).parameters) == ["page", "parent_block_id", "create_page"]
+    assert list(inspect.signature(api.memory).parameters) == []
     assert api.edn({"a": [1, True]}) == '{"a" [1 true]}'

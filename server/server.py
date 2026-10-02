@@ -537,7 +537,7 @@ async def delete_block(block_id: int) -> str:
     """Delete a block and its children."""
     await refuse_memory_page(block_id=block_id)
     # Logseq sync once rejected removing blocks that still had user properties (in the
-    # subtree), and they came back; see memory_mcp. Clear them first to be safe.
+    # subtree), and they came back (seen live on the old memory page). Clear them first to be safe.
     edges = (await cli("query", f"--query={PAGE_PARENTS_QUERY}", f"--inputs=[{block_id}]",
                        json_out=True))["result"] or []
     children: dict[int, list[int]] = {}
@@ -640,14 +640,8 @@ class Group:
     first: bool = False           # its instructions go at the very start (clients cut long ones)
 
 
-def _build_skills(skills_mcp) -> FastMCP:
-    import memory_mcp  # claude.ai shows instructions late, but always calls memory_recall: the index rides along, read fresh
-    memory_mcp.RECALL_EXTRA = lambda: skills_mcp.instructions(skills_mcp.load_all(skills_mcp.SKILLS_DIR))
-    return skills_mcp.build()
-
-
 GROUPS: tuple[Group, ...] = (
-    Group("memory", "memory_mcp", build=lambda m: m.build(cli, ensure_properties, edn)),
+    Group("memory", "memory_mcp", build=lambda m: m.build()),
     Group("health", "health_mcp", build=lambda m: m.build()),
     Group("people", "people_mcp", build=lambda m: m.build(cli)),
     Group("cards", "cards_mcp", build=lambda m: m.build(cli)),
@@ -675,7 +669,7 @@ GROUPS: tuple[Group, ...] = (
     Group("home", "home_mcp",
           instructions=" The home_* tools control Apple Home (accessories, scenes, automations, motion)"
                        " through the Life Home app; HomePods and the Apple TV are music_* and tv_*."),
-    Group("skills", "skills_mcp", build=_build_skills, first=True,
+    Group("skills", "skills_mcp", build=lambda m: m.build(), first=True,
           instructions=lambda m: m.instructions(m.load_all(m.SKILLS_DIR))),
 )
 
