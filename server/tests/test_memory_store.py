@@ -1136,20 +1136,35 @@ def test_split_may_reuse_the_topics_own_name(tmp_store):
 def _topics_up_to(tmp_path, count):
     root = tmp_path / "memory"
     make_topic(root, "core", "c", "core")
-    for letter in "abdefghijklmnopqrs"[:count]:  # not c (core) or z (archive)
+    for letter in "abdefghijklmnopqrstu"[:count]:  # twenty letters; not c (core) or z (archive)
         make_topic(root, f"topic-{letter}", letter, "x",
                    body=f"- [{letter}1] one (2026-09-01, phone)\n- [{letter}2] two (2026-09-01, phone)")
     return MemoryStore(root, commit=False)
 
 
+def _topic_files(store):
+    """What the topic list counts: every topic, but not core and not the archive."""
+    return [t.name for t in store.topics() if t.name != CORE]
+
+
 def test_index_over_20_lines_refused_for_new_topic(tmp_path):
-    store = _topics_up_to(tmp_path, 18)
-    assert len(store.topics()) == MAX_INDEX_LINES - 1  # core and 18 topics: 19 lines
-    store.split("topic-a", {"left": ["a1"], "right": ["a2"]}, {"left": "l", "right": "r"})  # 20 lines: allowed
-    assert len(store.topics()) == MAX_INDEX_LINES
+    store = _topics_up_to(tmp_path, 19)
+    assert len(_topic_files(store)) == MAX_INDEX_LINES - 1  # core is there as well, and doesn't count
+    store.split("topic-a", {"left": ["a1"], "right": ["a2"]}, {"left": "l", "right": "r"})  # 20 topics: allowed
+    assert len(_topic_files(store)) == MAX_INDEX_LINES
     with pytest.raises(MemoryError_, match=r"topic list.*20"):
         store.split("topic-b", {"up": ["b1"], "down": ["b2"]}, {"up": "u", "down": "d"})
-    assert ids(store, "topic-b") == ["b1", "b2"] and len(store.topics()) == MAX_INDEX_LINES
+    with pytest.raises(MemoryError_, match=r"21 topics"):  # keeping the name still adds one
+        store.split("topic-d", {"topic-d": ["d1"], "extra": ["d2"]}, {"topic-d": "x", "extra": "e"})
+    assert ids(store, "topic-b") == ["b1", "b2"] and ids(store, "topic-d") == ["d1", "d2"]
+    assert len(_topic_files(store)) == MAX_INDEX_LINES
+
+
+def test_the_archive_doesnt_count_toward_the_topic_list(tmp_path):
+    store = _topics_up_to(tmp_path, 19)
+    (store.root / "archive.md").write_text("# archive (z): ended\n\n- [z1] (was a9, archived 2026-01-01: gone) x\n")
+    store.split("topic-a", {"left": ["a1"], "right": ["a2"]}, {"left": "l", "right": "r"})
+    assert len(_topic_files(store)) == MAX_INDEX_LINES
 
 
 def test_merge_keeps_pointer_and_archives_the_other(tmp_store):

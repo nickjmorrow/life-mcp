@@ -52,7 +52,7 @@ CORE = "core"
 ARCHIVE = "archive"
 CORE_LIMIT = 2500  # characters of entries; a write that would take core past it is refused
 TOPIC_SOFT = 4000  # a save past it still works, and says a split is due
-MAX_INDEX_LINES = 20  # the topic list (core counts as one line) never grows past this
+MAX_INDEX_LINES = 20  # topics (not core, not the archive) never grow past this many: one line each in the list
 SAME_RATIO = 0.95  # a repeat of an existing entry is skipped
 SIMILAR_RATIO = 0.6  # a near-duplicate is held until the caller says add or replace
 DEFAULT_REVIEW_DAYS = 90  # in a reviewed topic an entry is due this long after its date, unless it has its own
@@ -536,7 +536,8 @@ class MemoryStore:
     # -- reading (no lock: every file is replaced whole) --
 
     def topics(self) -> list[Topic]:
-        """Core first, then the topic files by name. The archive isn't a topic: ask for it by name."""
+        """Core first, then the topic files by name. The archive isn't a topic: ask for it by name. (The topic list's
+        cap, MAX_INDEX_LINES, counts the topics after core.)"""
         return [Topic(d.name, d.prefix, d.about, len(d.rows), d.reviewed) for d in self._docs(archive=False)]
 
     def entries(self, topic: str) -> list[Entry]:
@@ -824,10 +825,11 @@ class MemoryStore:
                                    "like 'sleep' or 'home-office'.")
             if n in existing and n != src.name:
                 raise MemoryError_(f"There's already a topic called '{n}'. Pick a new name.")
-        after = len(existing) - (src.name not in wanted) + len([n for n in wanted if n != src.name])
+        topic_files = [n for n in existing if n != CORE]  # the topic list counts topics, not core or the archive
+        after = len(topic_files) - (src.name not in wanted) + len([n for n in wanted if n != src.name])
         if after > MAX_INDEX_LINES:
-            raise MemoryError_(f"That would make {after} topics (core counts as one), and the topic list holds at "
-                               f"most {MAX_INDEX_LINES}. Merge or retire a topic first.")
+            raise MemoryError_(f"That would make {after} topics, and the topic list holds at most "
+                               f"{MAX_INDEX_LINES}. Merge or retire a topic first.")
 
         abouts = {_topic_name(n): text for n, text in about.items()}
         blank = [n for n in wanted if not (abouts.get(n) or "").strip() and n != src.name]
