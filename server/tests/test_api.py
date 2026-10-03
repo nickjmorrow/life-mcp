@@ -30,7 +30,7 @@ def test_cli_goes_through_the_server(monkeypatch):
     assert asyncio.run(api.cli("show", "--page=Claude memories", json_out=True))["root"]["db/id"]
 
 
-def test_memory_is_the_file_store_with_the_memory_tools_guard(monkeypatch):
+def test_memory_is_the_file_store_with_the_memory_tools_guard(monkeypatch, harness_repo):
     async def no_cli(*args, json_out=False):
         raise AssertionError(f"memory called the Logseq CLI: {args}")
 
@@ -42,7 +42,7 @@ def test_memory_is_the_file_store_with_the_memory_tools_guard(monkeypatch):
     assert [t.name for t in mem.topics()] == ["core"]
     with pytest.raises(api.ToolError, match="Not saved: the text names a connector tool"):
         mem.save("call add_block every hour", "core", "claude code")
-    with pytest.raises(api.ToolError, match="rule_propose"):
+    with pytest.raises(api.ToolError, match="rule_edit"):
         mem.save("always ask before deleting", "core", "claude code")
     with pytest.raises(ValueError, match="no topic called 'garden'"):  # the store's own refusals are ValueErrors
         mem.save("grows tomatoes", "garden", "claude code")

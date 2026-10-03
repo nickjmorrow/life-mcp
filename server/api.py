@@ -46,7 +46,8 @@ async def target_args(page: str | None, parent_block_id: int | None, create_page
 
 
 def memory() -> memory_store.MemoryStore:
-    """The shared memory: Markdown topic files in a local git repo, with the same guard the memory_* tools use.
+    """The shared memory: Markdown topic files in the harness repo's memory/ folder, written on the dev branch (one
+    commit each, pushed soon after), with the same guard the memory_* tools use.
     Methods (all plain, none async): .topics(), .entries(topic), .render(topic), .size(topic) (characters of entries),
     .search(word), .save(text, topic, source, under=None, review=None, similar=None), .update(entry_id, text=None,
     remove=False, review=None), .archive(entry_id, why), .move(entry_id, topic), .merge(keep_id, merge_id, text),
@@ -54,7 +55,7 @@ def memory() -> memory_store.MemoryStore:
     .commit_files(files, message). Text that names a connector tool, reads like a command or a rule for Claude, or holds
     a secret is refused with a ToolError; every other refusal (an unknown topic, a full core, a bad date) is a
     memory_store.MemoryError_, a ValueError."""
-    return memory_mcp.store()
+    return memory_mcp.write_store()
 
 
 async def people_note(person: str, text: str) -> str:

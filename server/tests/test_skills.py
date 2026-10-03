@@ -133,16 +133,18 @@ def test_skills_mount_puts_index_first():
     assert target.instructions.endswith("base")
 
 
-def test_memory_recall_carries_live_skill_index(monkeypatch, tmp_path):
-    # claude.ai always calls memory_recall first, so the skill index rides along with it, read fresh each time.
+def test_memory_recall_carries_live_skill_list(monkeypatch, tmp_path):
+    # claude.ai always calls memory_recall first, so the skill list rides along in CONTEXT.md's text, read fresh each time.
     import memory_mcp
+    import private
 
-    write(tmp_path, "research", 'name: research\ndescription: d\ntrigger: "/research"')
-    monkeypatch.setattr(skills_mcp, "SKILLS_DIR", tmp_path)
+    monkeypatch.setattr(private, "DIR", tmp_path)
+    skills = tmp_path / "skills"
+    write(skills, "research", 'name: research\ndescription: d\ntrigger: "/research"')
     mem = memory_mcp.build()
-    assert "research (/research)" in call(mem, "memory_recall")
-    write(tmp_path, "buddy", 'name: buddy\ndescription: d\ntrigger: "/buddy"')  # no restart needed
-    assert "buddy (/buddy)" in call(mem, "memory_recall")
+    assert "- research: /research" in call(mem, "memory_recall")
+    write(skills, "buddy", 'name: buddy\ndescription: d\ntrigger: "/buddy"')  # no restart needed
+    assert "- buddy: /buddy" in call(mem, "memory_recall")
 
 
 def test_missing_skills_folder_is_fine(tmp_path):

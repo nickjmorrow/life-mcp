@@ -1,4 +1,4 @@
-"""Which private folder the connector reads: the harness's live tree whenever the Mac has one, and nothing in
+"""Which private folder the connector reads: the clean copy of the harness's main whenever the Mac has one, and nothing in
 ~/.zshrc.local can point it elsewhere. Every path here is a temp folder standing in for the home folder."""
 import os
 import subprocess
@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 SERVER = Path(__file__).resolve().parent.parent
-LIVE_REL = Path("Library") / "Application Support" / "personal-agent" / "live"
+CLEAN_REL = Path("Library") / "Application Support" / "personal-agent-harness"
 
 
 @pytest.fixture
@@ -29,17 +29,17 @@ def private_dir(home, env_value=None):
     return Path(done.stdout.strip())
 
 
-def test_the_default_is_the_live_tree_when_there_is_one(home):
-    (home / LIVE_REL).mkdir(parents=True)
-    assert private_dir(home) == home / LIVE_REL
+def test_the_default_is_the_clean_copy_when_there_is_one(home):
+    (home / CLEAN_REL).mkdir(parents=True)
+    assert private_dir(home) == home / CLEAN_REL
 
 
-def test_the_default_is_the_checkout_without_a_live_tree(home):
+def test_the_default_is_the_checkout_without_a_clean_copy(home):
     assert private_dir(home) == home / "Projects" / "personal-agent-harness"
 
 
 def test_the_variable_still_wins_when_set(home, tmp_path):
-    (home / LIVE_REL).mkdir(parents=True)
+    (home / CLEAN_REL).mkdir(parents=True)
     assert private_dir(home, str(tmp_path / "chosen")) == tmp_path / "chosen"
 
 
@@ -52,12 +52,12 @@ def sourced(home, script="private-env.sh"):
     return done.stdout.rstrip("\n")
 
 
-def test_private_env_overrides_zshrc_local_with_the_live_tree(home):
-    (home / LIVE_REL).mkdir(parents=True)
-    assert sourced(home) == str(home / LIVE_REL)
+def test_private_env_overrides_zshrc_local_with_the_clean_copy(home):
+    (home / CLEAN_REL).mkdir(parents=True)
+    assert sourced(home) == str(home / CLEAN_REL)
 
 
-def test_private_env_leaves_things_alone_without_a_live_tree(home, tmp_path):
+def test_private_env_leaves_things_alone_without_a_clean_copy(home, tmp_path):
     assert sourced(home) == str(tmp_path / "elsewhere")
 
 

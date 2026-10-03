@@ -110,9 +110,9 @@ def test_facts_and_preferences_are_not_rules(text):
     memory_guard(text)
 
 
-def test_the_guard_points_a_rule_to_rule_propose():
+def test_the_guard_points_a_rule_to_rule_edit():
     with pytest.raises(ToolError, match=r"^Not saved: this reads like a rule for Claude, not a fact about him\. "
-                                        r"Propose it with rule_propose so he can approve it\.$"):
+                                        r"Put it in with rule_edit so it lands in the changes he merges\.$"):
         memory_guard("always ask before deleting")
 
 
@@ -128,5 +128,5 @@ def test_the_guard_still_runs_check_safe_first():
 def test_a_standing_instruction_passes_check_safe_but_not_the_memory_guard():
     text = "never surface photos of an ex unprompted"
     check_safe(text)  # it doesn't call a tool, override anything or leak a secret
-    with pytest.raises(ToolError, match="rule_propose"):
+    with pytest.raises(ToolError, match="rule_edit"):
         memory_guard(text)

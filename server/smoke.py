@@ -34,7 +34,7 @@ def check_memory():
     """Memory is files on this Mac, so read the topic list straight from the store. A smoke run never calls
     memory_recall: that would count as a chat in the usage log."""
     import memory_mcp
-    memory_mcp.store().topics()
+    memory_mcp.read_store().topics()
 
 
 def check_proposals():
@@ -77,18 +77,18 @@ def _running_record():
 
 
 def check_private():
-    """On a Mac with the harness's live tree (private.LIVE), the private folder must be that tree: always in this
+    """On a Mac with the harness's clean copy (private.CLEAN), the private folder must be that tree: always in this
     process (run as the deploy runs it, after private-env.sh), and in the running connector when this Mac runs one
     (it says which folder it reads in server.RUNNING_FILE when it starts): a connector reading the checkout would serve
-    skills, rules and settings nobody approved. A Mac with a live tree but no running connector (no record, or the
+    skills, rules and settings nobody approved. A Mac with a clean copy but no running connector (no record, or the
     record's pid has exited) checks only this process and says "no connector here". With --expect-connector (the
-    server Mac's deploy) no running connector is a failure, live tree or not, so a crashed connector can't pass."""
+    server Mac's deploy) no running connector is a failure, clean copy or not, so a crashed connector can't pass."""
     import private
-    live = private.LIVE.resolve() if private.LIVE.is_dir() else None
+    live = private.CLEAN.resolve() if private.CLEAN.is_dir() else None
     if live is None and not EXPECT_CONNECTOR:
         return None
     if live is not None and private.DIR.resolve() != live:
-        raise RuntimeError(f"this check reads {private.DIR}, not the live tree {live} (source private-env.sh)")
+        raise RuntimeError(f"this check reads {private.DIR}, not the clean copy {live} (source private-env.sh)")
     running = _running_record()
     if running is None:
         if EXPECT_CONNECTOR:
@@ -102,15 +102,15 @@ def check_private():
     except (KeyError, TypeError) as e:
         raise _unsaid(e) from None
     if folder.resolve() != live:
-        raise RuntimeError(f"the running connector reads {folder}, not the live tree {live}")
+        raise RuntimeError(f"the running connector reads {folder}, not the clean copy {live}")
     return None
 
 
 # Groups checked without a tool call: what the check calls, and the function that does it.
 LOCAL_CHECKS = {
-    "memory": ("store().topics()", check_memory),
+    "memory": ("read_store().topics()", check_memory),
     "proposals": ("token file", check_proposals),
-    "private": ("live tree", check_private),
+    "private": ("clean copy", check_private),
 }
 
 

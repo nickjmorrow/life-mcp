@@ -1,11 +1,16 @@
-"""Shared memory for every Claude (phone, web, Claude Code): Markdown topic files in a local git repo.
+"""Shared memory for every Claude (phone, web, Claude Code): Markdown topic files in the harness repo's memory/ folder.
 
 memory_store.py holds the files and every rule about them (ids, review dates, near-duplicates, the core budget, one
 commit per change). This module is what sits on top: the three tools, and the guard in front of the store, which every
-text entering memory passes. context.py builds what a recall with no topic returns.
+text entering memory passes.
+
+Reads come from the clean copy of the repo's main branch (private.DIR), so what Claude knows is what Nicholas merged.
+Writes go to the working copy on dev (WORKING_COPY/memory), one commit each, then a background push; a saved fact
+reaches other chats once he merges the open changes. A recall with no topic returns CONTEXT.md (context.py).
 """
 import asyncio
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Annotated, Any, Callable, Literal
@@ -18,7 +23,7 @@ import context
 import memory_store
 import private
 import usage_log
-from context import DATA_HEADER  # topic reads open with it too; the bundle (context.py) has it above the core facts
+from context import DATA_HEADER  # topic reads open with it too; CONTEXT.md (context.py) has it above the core facts
 from memory_store import MemoryError_, MemoryStore
 
 # The Logseq page memory used to live on. Memory is files now; server.py's block tools still refuse this page until
@@ -27,7 +32,7 @@ PAGE = "Claude memories"
 
 # Memory comes back at the start of every chat, so text planted there (say, from a message someone sent him) would
 # steer every later Claude. Facts and preferences are fine; tool commands, instruction overrides and secrets are not,
-# and neither are rules for Claude (below), which have to be proposed and approved.
+# and neither are rules for Claude (below), which go in as a change he merges.
 _TOOLS = r"\b(?:memory|people|home|hue|tv|music|eight_sleep|reminders|skill|health|hevy)_[a-z_]+\b"
 _CALL = r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\("  # any snake_case_name( : a function call
 _OVERRIDE = r"\b(?:ignore|disregard|forget|override)\b[^.]{0,40}\b(?:instructions?|rules?|prompt|previous|above)\b"
@@ -97,7 +102,7 @@ def check_safe(text: str) -> None:
 # that follows from a fact ("dairy-free") is saved as the fact. These catch the usual shapes: text that starts with
 # a command word, or that tells Claude, "you" or "the assistant" what to do.
 RULE_REFUSAL = ("Not saved: this reads like a rule for Claude, not a fact about him. "
-                "Propose it with rule_propose so he can approve it.")
+                "Put it in with rule_edit so it lands in the changes he merges.")
 _RULE_START = re.compile(r"^\W*(?:always|never|don'?t|do not|make sure|from now on|remember to)\b", re.IGNORECASE)
 _RULE_ADDRESSED = re.compile(r"\b(?:claude|you|the assistant)\b.{0,30}\b(?:should|must|always|never|don'?t)\b",
                              re.IGNORECASE)
@@ -118,21 +123,54 @@ def memory_guard(text: str) -> None:
         raise ToolError(RULE_REFUSAL)
 
 
-# Where memory lives: the private config's memory_dir, else beside the connector's other data.
-_DEFAULT_DIR = "~/Library/Application Support/life-mcp/memory"
+# Where memory lives: a folder inside the harness working copy (on dev), written under the repo's shared lock and pushed
+# soon after each commit. Reads come from the clean copy of main (private.DIR).
+_DEFAULT_WORKING_COPY = "~/Projects/personal-agent-harness"
+MERGE_NOTE = " It reaches other chats once Nicholas merges the open changes."
+
+
+def _setting(key: str, default: str = "") -> str:
+    return str(private.get(key) or "").strip() or default
+
+
+def _working_copy() -> Path:
+    return Path(_setting("harness.working_copy", _DEFAULT_WORKING_COPY)).expanduser()
 
 
 def _memory_dir() -> Path:
-    return Path(str(private.get("memory_dir") or "").strip() or _DEFAULT_DIR).expanduser()
+    configured = _setting("memory_dir")
+    return Path(configured).expanduser() if configured else _working_copy() / "memory"
 
 
+def _lock_path() -> Path | None:
+    configured = _setting("harness.lock")
+    return Path(configured).expanduser() if configured else None
+
+
+WORKING_COPY = _working_copy()
 MEMORY_DIR = _memory_dir()
+LOCK_PATH = _lock_path()
 
 
-def store() -> MemoryStore:
-    """The shared memory, with the guard in front of every text that enters it and the bundle rebuilt in the commit of
-    every write."""
-    return MemoryStore(MEMORY_DIR, guard=memory_guard, on_change=context.bundle_files)
+def _push_soon(sha: str) -> None:
+    """After a commit, start the harness command's push in the background and don't wait for it. No command, no push."""
+    command = private.get("harness.command")
+    if not command or not isinstance(command, list):
+        return
+    subprocess.Popen([*map(str, command), "push"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def read_store() -> MemoryStore:
+    """Memory as merged: the clean copy of main. Reads only; never runs git."""
+    return MemoryStore(private.DIR / "memory", commit=False)
+
+
+def write_store() -> MemoryStore:
+    """Memory for writing: the working copy's memory/ folder, on dev only, with the guard in front of every text that
+    enters it. Each commit is pushed soon after (see _push_soon)."""
+    return MemoryStore(MEMORY_DIR, guard=memory_guard, repo=WORKING_COPY, branch="dev", lock_path=LOCK_PATH,
+                       after_commit=_push_soon)
 
 
 Source = Literal["phone", "web", "claude code", "other"]
@@ -143,26 +181,34 @@ INSTRUCTIONS = (
     " about him, a preference, a decision and its reason, a project change; facts about a person go to people_note),"
     " call memory_save (pick a topic) and end your reply with its one line. Don't save one-off details, anything"
     " already there, or passwords, keys and account numbers. Rules about how Claude should behave go to"
-    " rule_propose, not memory; \"write down / note...\" about his day means his journal."
+    " rule_edit, not memory; \"write down / note...\" about his day means his journal."
 )
 
 SAVE_DESCRIPTION = (
     "Lasting facts about him (never one-off details or secrets). Core is only for facts that change most answers; "
     "everything else goes to a topic. For a passing state set review about four weeks out; for a plan, its date. "
     "If the save is held for similar entries, call again with similar='add' or similar='replace:<id>'. "
-    "How Claude should behave goes to rule_propose.")
+    "How Claude should behave goes to rule_edit.")
 
 
 def _recall(s: MemoryStore, topic: str | None) -> str:
-    """With no topic: what every chat starts with, the bundle (his rules, core facts and the topic list) and the skills'
-    index. With one: that topic's file, or the archive when asked for it by name, or else the entries across topics
-    that mention it (never the archive's), under the data header."""
+    """With no topic: what every chat starts with, CONTEXT.md (his rules, core facts, the topic list and the skill list).
+    With one: that topic's file, or the archive when asked for it by name, or else the entries across topics that
+    mention it (never the archive's), under the data header."""
     if topic is None:
-        return context.read("phone", s)
+        return _context_text()
     name = " ".join(topic.split()).lower()
     if name == memory_store.ARCHIVE or any(t.name == name for t in s.topics()):
         return f"{DATA_HEADER}\n{s.render(name)}"
     return f"{DATA_HEADER}\n{s.search(topic)}"
+
+
+def _context_text() -> str:
+    """CONTEXT.md from the clean copy if it's there, else rendered from the same folder."""
+    try:
+        return (private.DIR / context.FILE).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return context.render(private.DIR)
 
 
 async def _run(fn: Callable[..., Any], *args: Any) -> Any:
@@ -172,6 +218,21 @@ async def _run(fn: Callable[..., Any], *args: Any) -> Any:
         return await asyncio.to_thread(fn, *args)
     except MemoryError_ as e:
         raise ToolError(str(e)) from None
+
+
+def _with_note(reply: str) -> str:
+    """After a change, the note that it waits for the merge goes before the store's "End your reply with: ..."
+    instruction, so the line Claude ends its reply with stays the store's own."""
+    marker = " End your reply with:"
+    return reply.replace(marker, MERGE_NOTE + marker, 1)  # a reply without it changed nothing (a repeat, a hold)
+
+
+def _save(*args: Any) -> str:
+    return _with_note(write_store().save(*args))
+
+
+def _update(*args: Any) -> str:
+    return _with_note(write_store().update(*args))
 
 
 def build() -> FastMCP:
@@ -184,7 +245,7 @@ def build() -> FastMCP:
         """Read Nicholas's shared memory: with no topic, his rules, core facts and the list of topics; with a topic,
         what's saved there. Call once at the start of a conversation about his life, plans, preferences or setup."""
         usage_log.record("memory_recall")
-        return await _run(_recall, store(), (topic or "").strip() or None)
+        return await _run(_recall, read_store(), (topic or "").strip() or None)
 
     @mcp.tool(description=SAVE_DESCRIPTION, annotations={"readOnlyHint": False, "destructiveHint": False})
     async def memory_save(
@@ -196,7 +257,7 @@ def build() -> FastMCP:
         similar: Annotated[str | None, Field(description="Only after a save was held for similar entries: 'add' to keep both, or 'replace:<id>' to close the old one")] = None,
     ) -> str:
         await tool_names()  # the guard needs every tool the server exposes
-        return await _run(store().save, text, topic, source, under, review, similar)
+        return await _run(_save, text, topic, source, under, review, similar)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True})
     async def memory_update(
@@ -207,6 +268,6 @@ def build() -> FastMCP:
         """Change a memory, confirm it's still true (leave the text out), or remove it. Afterwards, end your reply with
         the line it gives."""
         await tool_names()
-        return await _run(store().update, entry_id, text, remove)
+        return await _run(_update, entry_id, text, remove)
 
     return mcp

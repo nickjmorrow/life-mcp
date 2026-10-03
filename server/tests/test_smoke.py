@@ -45,31 +45,39 @@ def listing(folder):
 
 
 def test_memory_is_checked_by_reading_the_store_not_by_calling_a_tool():
-    assert smoke.LOCAL_CHECKS["memory"][0] == "store().topics()"
+    assert smoke.LOCAL_CHECKS["memory"][0] == "read_store().topics()"
     assert "memory" not in smoke.CHECKS
 
 
-def test_memory_check_reads_the_store_and_writes_nothing(no_server, capsys):
-    folder = memory_mcp.MEMORY_DIR
+@pytest.fixture
+def clean_memory(tmp_path, monkeypatch):
+    """The clean copy's memory folder, which the check reads (private.DIR/memory)."""
+    clean = tmp_path / "clean"
+    monkeypatch.setattr(private, "DIR", clean)
+    return clean / "memory"
+
+
+def test_memory_check_reads_the_store_and_writes_nothing(no_server, capsys, clean_memory):
+    folder = clean_memory
     (folder / "topics").mkdir(parents=True)
     (folder / "core.md").write_text("# core (c): facts that change most answers\n\n- [c1] likes oolong tea (2026-10-05, phone)\n")
     (folder / "topics" / "home.md").write_text("# home (o): home, pets, household\n")
     before = listing(folder)
     assert smoke.run(["memory"]) == 0
-    assert "ok    memory       store().topics()" in capsys.readouterr().out
+    assert "ok    memory       read_store().topics()" in capsys.readouterr().out
     assert listing(folder) == before  # no new file, no commit, no change
     assert not usage_log.PATH.exists()  # a smoke run is not a chat that called memory_recall
 
 
-def test_memory_check_passes_before_anything_is_saved(no_server, capsys):
-    assert not memory_mcp.MEMORY_DIR.exists()
+def test_memory_check_passes_before_anything_is_saved(no_server, capsys, clean_memory):
+    assert not clean_memory.exists()
     assert smoke.run(["memory"]) == 0
-    assert not memory_mcp.MEMORY_DIR.exists()  # not even the folder is made
+    assert not clean_memory.exists()  # not even the folder is made
 
 
-def test_memory_check_fails_when_a_memory_file_is_broken(no_server, capsys):
-    (memory_mcp.MEMORY_DIR / "topics").mkdir(parents=True)
-    (memory_mcp.MEMORY_DIR / "topics" / "home.md").write_text("no header here\n")
+def test_memory_check_fails_when_a_memory_file_is_broken(no_server, capsys, clean_memory):
+    (clean_memory / "topics").mkdir(parents=True)
+    (clean_memory / "topics" / "home.md").write_text("no header here\n")
     assert smoke.run(["memory"]) == 1
     out = capsys.readouterr().out
     assert "FAIL  memory" in out and "home" in out
@@ -111,16 +119,16 @@ def test_every_group_is_run_when_none_is_named(no_server, approvals_token, monke
     assert len(ran) == len(smoke.CHECKS) and "ok    memory" in capsys.readouterr().out
 
 
-# --- the private folder: the live tree, here and in the running connector -----------------------------------------
+# --- the private folder: the clean copy, here and in the running connector -----------------------------------------
 
 
 @pytest.fixture
-def live_tree(tmp_path, monkeypatch):
-    """A made-up live tree, this process reading it, and the running connector's record saying it does too."""
+def clean_copy(tmp_path, monkeypatch):
+    """A made-up clean copy, this process reading it, and the running connector's record saying it does too."""
     import server
     live = tmp_path / "live"
     live.mkdir()
-    monkeypatch.setattr(private, "LIVE", live)
+    monkeypatch.setattr(private, "CLEAN", live)
     monkeypatch.setattr(private, "DIR", live)
     record = tmp_path / "running.json"
     record.write_text(json.dumps({"pid": os.getpid(), "private_dir": str(live), "started_at": "2026-10-05T07:00:00"}))
@@ -128,93 +136,93 @@ def live_tree(tmp_path, monkeypatch):
     return SimpleNamespace(live=live, record=record)
 
 
-def test_private_check_passes_when_both_read_the_live_tree(no_server, live_tree, capsys):
+def test_private_check_passes_when_both_read_the_clean_copy(no_server, clean_copy, capsys):
     assert smoke.run(["private"]) == 0
-    assert "ok    private      live tree" in capsys.readouterr().out
+    assert "ok    private      clean copy" in capsys.readouterr().out
 
 
-def test_private_check_has_nothing_to_check_without_a_live_tree(no_server, tmp_path, monkeypatch):
-    monkeypatch.setattr(private, "LIVE", tmp_path / "none")
+def test_private_check_has_nothing_to_check_without_a_clean_copy(no_server, tmp_path, monkeypatch):
+    monkeypatch.setattr(private, "CLEAN", tmp_path / "none")
     monkeypatch.setattr(private, "DIR", tmp_path / "checkout")
     assert smoke.run(["private"]) == 0
 
 
-def test_private_check_fails_when_this_process_reads_the_checkout(no_server, live_tree, tmp_path, monkeypatch, capsys):
+def test_private_check_fails_when_this_process_reads_the_checkout(no_server, clean_copy, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(private, "DIR", tmp_path / "checkout")
     assert smoke.run(["private"]) == 1
     assert "FAIL  private" in capsys.readouterr().out
 
 
-def test_private_check_fails_when_the_connector_reads_the_checkout(no_server, live_tree, tmp_path, capsys):
-    live_tree.record.write_text(json.dumps({"pid": os.getpid(), "private_dir": str(tmp_path / "checkout")}))
+def test_private_check_fails_when_the_connector_reads_the_checkout(no_server, clean_copy, tmp_path, capsys):
+    clean_copy.record.write_text(json.dumps({"pid": os.getpid(), "private_dir": str(tmp_path / "checkout")}))
     assert smoke.run(["private"]) == 1
     out = capsys.readouterr().out
     assert "FAIL  private" in out and "running connector reads" in out
 
 
-def test_private_check_skips_the_connector_on_a_mac_without_one(no_server, live_tree, capsys):
-    """A Mac with a live tree but no connector (no record): only this process is checked, and that's ok."""
-    live_tree.record.unlink()
+def test_private_check_skips_the_connector_on_a_mac_without_one(no_server, clean_copy, capsys):
+    """A Mac with a clean copy but no connector (no record): only this process is checked, and that's ok."""
+    clean_copy.record.unlink()
     assert smoke.run(["private"]) == 0
     out = capsys.readouterr().out
     assert "ok    private" in out and "no connector here" in out
 
 
-def test_private_check_skips_a_record_from_a_connector_that_stopped(no_server, live_tree, capsys):
+def test_private_check_skips_a_record_from_a_connector_that_stopped(no_server, clean_copy, capsys):
     proc = subprocess.Popen(["/usr/bin/true"])
     proc.wait()  # a pid that has exited (our own child's, reaped)
-    live_tree.record.write_text(json.dumps({"pid": proc.pid, "private_dir": str(tmp_checkout := live_tree.live.parent / "checkout")}))
+    clean_copy.record.write_text(json.dumps({"pid": proc.pid, "private_dir": str(tmp_checkout := clean_copy.live.parent / "checkout")}))
     assert smoke.run(["private"]) == 0
     out = capsys.readouterr().out
     assert "ok    private" in out and "no connector here" in out and str(tmp_checkout) not in out
 
 
-def test_expect_connector_fails_when_no_connector_runs(no_server, live_tree, capsys):
+def test_expect_connector_fails_when_no_connector_runs(no_server, clean_copy, capsys):
     """Edgar's deploy passes --expect-connector: a crashed connector there must not pass as "no connector here"."""
-    live_tree.record.unlink()
+    clean_copy.record.unlink()
     assert smoke.main(["--expect-connector", "private"]) == 1
     out = capsys.readouterr().out
     assert "FAIL  private" in out and "no connector is running" in out
 
 
-def test_expect_connector_fails_when_the_records_pid_has_exited(no_server, live_tree, capsys):
+def test_expect_connector_fails_when_the_records_pid_has_exited(no_server, clean_copy, capsys):
     proc = subprocess.Popen(["/usr/bin/true"])
     proc.wait()
-    live_tree.record.write_text(json.dumps({"pid": proc.pid, "private_dir": str(live_tree.live)}))
+    clean_copy.record.write_text(json.dumps({"pid": proc.pid, "private_dir": str(clean_copy.live)}))
     assert smoke.main(["--expect-connector", "private"]) == 1
     assert "no connector is running" in capsys.readouterr().out
 
 
-def test_expect_connector_fails_without_a_live_tree_too(no_server, tmp_path, monkeypatch, capsys):
+def test_expect_connector_fails_without_a_clean_copy_too(no_server, tmp_path, monkeypatch, capsys):
     import server
-    monkeypatch.setattr(private, "LIVE", tmp_path / "none")
+    monkeypatch.setattr(private, "CLEAN", tmp_path / "none")
     monkeypatch.setattr(private, "DIR", tmp_path / "checkout")
     monkeypatch.setattr(server, "RUNNING_FILE", tmp_path / "running.json")
     assert smoke.main(["--expect-connector", "private"]) == 1
     assert smoke.main(["private"]) == 0
 
 
-def test_expect_connector_passes_with_a_running_connector_on_the_live_tree(no_server, live_tree, capsys):
+def test_expect_connector_passes_with_a_running_connector_on_the_clean_copy(no_server, clean_copy, capsys):
     assert smoke.main(["--expect-connector", "private"]) == 0
     out = capsys.readouterr().out
     assert "ok    private" in out and "no connector here" not in out
 
 
-def test_without_the_flag_no_connector_stays_ok(no_server, live_tree, capsys):
-    live_tree.record.unlink()
+def test_without_the_flag_no_connector_stays_ok(no_server, clean_copy, capsys):
+    clean_copy.record.unlink()
     assert smoke.main(["private"]) == 0
     assert "no connector here" in capsys.readouterr().out
 
 
-def test_private_check_still_checks_this_process_without_a_connector(no_server, live_tree, tmp_path, monkeypatch, capsys):
-    live_tree.record.unlink()
+def test_private_check_still_checks_this_process_without_a_connector(no_server, clean_copy, tmp_path, monkeypatch, capsys):
+    clean_copy.record.unlink()
     monkeypatch.setattr(private, "DIR", tmp_path / "checkout")
     assert smoke.run(["private"]) == 1
     assert "FAIL  private" in capsys.readouterr().out
 
 
-def test_private_check_fails_on_an_unreadable_record_from_a_live_connector(no_server, live_tree, capsys):
-    live_tree.record.write_text(json.dumps({"pid": os.getpid()}))
+def test_private_check_fails_on_an_unreadable_record_from_a_live_connector(no_server, clean_copy, capsys):
+    clean_copy.record.write_text(json.dumps({"pid": os.getpid()}))
     assert smoke.run(["private"]) == 1
     assert "hasn't said" in capsys.readouterr().out
 

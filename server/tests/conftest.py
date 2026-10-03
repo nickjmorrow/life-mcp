@@ -20,11 +20,30 @@ def _usage_log_in_tmp(tmp_path, monkeypatch):
     tool list (a server that starts writes it, and any test that opens a client on a mounted server starts one)."""
     monkeypatch.setattr(usage_log, "PATH", tmp_path / "connector-usage.jsonl")
     import memory_mcp
-    monkeypatch.setattr(memory_mcp, "MEMORY_DIR", tmp_path / "memory")
+    monkeypatch.setattr(memory_mcp, "WORKING_COPY", tmp_path / "harness")  # memory is written inside this repo folder
+    monkeypatch.setattr(memory_mcp, "MEMORY_DIR", tmp_path / "harness" / "memory")
+    monkeypatch.setattr(memory_mcp, "LOCK_PATH", None)
     import home_mcp
     monkeypatch.setattr(home_mcp, "TOKEN_PATH", tmp_path / "config" / "home-token")
     import server
     monkeypatch.setattr(server, "TOOLS_FILE", tmp_path / "tools.json")
     monkeypatch.setattr(server, "RUNNING_FILE", tmp_path / "running.json")
-    import private  # a live tree on the Mac running the tests must not change what they check
-    monkeypatch.setattr(private, "LIVE", tmp_path / "no-live-tree")
+    import private  # a clean copy on the Mac running the tests must not change what they check
+    monkeypatch.setattr(private, "CLEAN", tmp_path / "no-clean-copy")
+
+
+@pytest.fixture
+def harness_repo():
+    """The working copy memory is written into: a git repo on dev with one commit, and nothing in memory/ yet."""
+    import subprocess
+
+    import memory_mcp
+    repo = memory_mcp.WORKING_COPY
+    repo.mkdir(parents=True, exist_ok=True)
+    run = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=repo,
+                                    capture_output=True, text=True, check=True)
+    run("init", "-q", "-b", "dev")
+    (repo / "README.md").write_text("harness\n")
+    run("add", "-A")
+    run("commit", "-q", "-m", "start")
+    return repo
