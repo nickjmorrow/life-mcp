@@ -43,30 +43,43 @@ def check_proposals():
 
 
 def check_private():
-    """On a Mac with the harness's live tree (private.LIVE), the private folder must be that tree, both in this process
-    (run as the deploy runs it, after private-env.sh) and in the running connector, which says so in
-    server.RUNNING_FILE when it starts: a connector reading the checkout would serve skills, rules and settings nobody
-    approved. A Mac without a live tree has nothing to check."""
+    """On a Mac with the harness's live tree (private.LIVE), the private folder must be that tree: always in this
+    process (run as the deploy runs it, after private-env.sh), and in the running connector when this Mac runs one
+    (it says which folder it reads in server.RUNNING_FILE when it starts): a connector reading the checkout would serve
+    skills, rules and settings nobody approved. A Mac with a live tree but no running connector (no record, or the
+    record's pid has exited) checks only this process. A Mac without a live tree has nothing to check."""
     import private
     import server
     if not private.LIVE.is_dir():
-        return
+        return None
     live = private.LIVE.resolve()
     if private.DIR.resolve() != live:
         raise RuntimeError(f"this check reads {private.DIR}, not the live tree {live} (source private-env.sh)")
     try:
-        running = json.loads(server.RUNNING_FILE.read_text(encoding="utf-8"))
-        pid, folder = running["pid"], Path(running["private_dir"])
-    except (OSError, ValueError, KeyError, TypeError) as e:
+        text = server.RUNNING_FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return "no connector here"
+    except OSError as e:
         raise RuntimeError(f"the running connector hasn't said which private folder it reads ({e!r})") from None
     try:
+        running = json.loads(text)
+        pid = running["pid"]
+        if type(pid) is not int or pid <= 0:
+            raise ValueError(f"pid {pid!r}")
         os.kill(pid, 0)
     except ProcessLookupError:
-        raise RuntimeError(f"the connector that wrote {server.RUNNING_FILE.name} (pid {pid}) isn't running") from None
+        return "no connector here"
     except PermissionError:
         pass
+    except (ValueError, KeyError, TypeError, OverflowError) as e:
+        raise RuntimeError(f"the running connector hasn't said which private folder it reads ({e!r})") from None
+    try:
+        folder = Path(running["private_dir"])
+    except (KeyError, TypeError) as e:
+        raise RuntimeError(f"the running connector hasn't said which private folder it reads ({e!r})") from None
     if folder.resolve() != live:
         raise RuntimeError(f"the running connector reads {folder}, not the live tree {live}")
+    return None
 
 
 # Groups checked without a tool call: what the check calls, and the function that does it.
@@ -109,11 +122,13 @@ async def run_checks(groups):
                 tool, args = CHECKS[group]
             start = time.time()
             try:
+                note = None
                 if check:
-                    check()
+                    note = check()
                 else:
                     await call(client, tool, args)
-                print(f"ok    {group:12} {tool} ({time.time() - start:.1f} s)")
+                note = f"; {note}" if isinstance(note, str) else ""
+                print(f"ok    {group:12} {tool} ({time.time() - start:.1f} s{note})")
             except Exception as e:  # report and keep going
                 failed = 1
                 print(f"FAIL  {group:12} {tool}: {e}")

@@ -152,18 +152,34 @@ def test_private_check_fails_when_the_connector_reads_the_checkout(no_server, li
     assert "FAIL  private" in out and "running connector reads" in out
 
 
-def test_private_check_fails_without_the_connectors_record(no_server, live_tree, capsys):
+def test_private_check_skips_the_connector_on_a_mac_without_one(no_server, live_tree, capsys):
+    """A Mac with a live tree but no connector (no record): only this process is checked, and that's ok."""
     live_tree.record.unlink()
-    assert smoke.run(["private"]) == 1
-    assert "hasn't said" in capsys.readouterr().out
+    assert smoke.run(["private"]) == 0
+    out = capsys.readouterr().out
+    assert "ok    private" in out and "no connector here" in out
 
 
-def test_private_check_fails_when_the_record_is_from_a_connector_that_stopped(no_server, live_tree, capsys):
+def test_private_check_skips_a_record_from_a_connector_that_stopped(no_server, live_tree, capsys):
     proc = subprocess.Popen(["/usr/bin/true"])
     proc.wait()  # a pid that has exited (our own child's, reaped)
-    live_tree.record.write_text(json.dumps({"pid": proc.pid, "private_dir": str(live_tree.live)}))
+    live_tree.record.write_text(json.dumps({"pid": proc.pid, "private_dir": str(tmp_checkout := live_tree.live.parent / "checkout")}))
+    assert smoke.run(["private"]) == 0
+    out = capsys.readouterr().out
+    assert "ok    private" in out and "no connector here" in out and str(tmp_checkout) not in out
+
+
+def test_private_check_still_checks_this_process_without_a_connector(no_server, live_tree, tmp_path, monkeypatch, capsys):
+    live_tree.record.unlink()
+    monkeypatch.setattr(private, "DIR", tmp_path / "checkout")
     assert smoke.run(["private"]) == 1
-    assert "isn't running" in capsys.readouterr().out
+    assert "FAIL  private" in capsys.readouterr().out
+
+
+def test_private_check_fails_on_an_unreadable_record_from_a_live_connector(no_server, live_tree, capsys):
+    live_tree.record.write_text(json.dumps({"pid": os.getpid()}))
+    assert smoke.run(["private"]) == 1
+    assert "hasn't said" in capsys.readouterr().out
 
 
 def test_smoke_never_writes_the_running_servers_tool_list(monkeypatch):
