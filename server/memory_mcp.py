@@ -97,7 +97,7 @@ def check_safe(text: str) -> None:
             raise ToolError(f"Not saved: the text {why}. Memory and person notes hold facts and preferences in plain words, "
                             "not commands for Claude; if Nicholas really wants this, he can add it himself.")
 
-# How Claude should behave is a rule, not a fact about him. Rules are proposed and he approves them, so a "fact"
+# How Claude should behave is a rule, not a fact about him. Rules go through rule_edit (his merge or his ship-it), so a "fact"
 # that is really an instruction (the usual way an assistant with memory gets steered) can't be saved. A preference
 # that follows from a fact ("dairy-free") is saved as the fact. These catch the usual shapes: text that starts with
 # a command word, or that tells Claude, "you" or "the assistant" what to do.

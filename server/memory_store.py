@@ -804,7 +804,7 @@ class MemoryStore:
         doc.insert([_line(0, entry_id, text, today(), source, review)], group)
         if doc.name != CORE and doc.size() > TOPIC_SOFT:
             notes.append(f"{doc.name} now holds {doc.size():,} characters, past the {TOPIC_SOFT:,} a topic should "
-                         "stay under, so the weekly tidy will propose splitting it.")
+                         "stay under, so the weekly review will split it.")
         tx.message = f"memory: save {entry_id} ({source})" + (f", archive {replace_id}" if replace_id else "")
         said = "".join(" " + n for n in notes)
         return f"Saved [{entry_id}].{said} End your reply with: saved to memory: {text}"
