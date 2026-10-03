@@ -169,6 +169,43 @@ def test_private_check_skips_a_record_from_a_connector_that_stopped(no_server, l
     assert "ok    private" in out and "no connector here" in out and str(tmp_checkout) not in out
 
 
+def test_expect_connector_fails_when_no_connector_runs(no_server, live_tree, capsys):
+    """Edgar's deploy passes --expect-connector: a crashed connector there must not pass as "no connector here"."""
+    live_tree.record.unlink()
+    assert smoke.main(["--expect-connector", "private"]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL  private" in out and "no connector is running" in out
+
+
+def test_expect_connector_fails_when_the_records_pid_has_exited(no_server, live_tree, capsys):
+    proc = subprocess.Popen(["/usr/bin/true"])
+    proc.wait()
+    live_tree.record.write_text(json.dumps({"pid": proc.pid, "private_dir": str(live_tree.live)}))
+    assert smoke.main(["--expect-connector", "private"]) == 1
+    assert "no connector is running" in capsys.readouterr().out
+
+
+def test_expect_connector_fails_without_a_live_tree_too(no_server, tmp_path, monkeypatch, capsys):
+    import server
+    monkeypatch.setattr(private, "LIVE", tmp_path / "none")
+    monkeypatch.setattr(private, "DIR", tmp_path / "checkout")
+    monkeypatch.setattr(server, "RUNNING_FILE", tmp_path / "running.json")
+    assert smoke.main(["--expect-connector", "private"]) == 1
+    assert smoke.main(["private"]) == 0
+
+
+def test_expect_connector_passes_with_a_running_connector_on_the_live_tree(no_server, live_tree, capsys):
+    assert smoke.main(["--expect-connector", "private"]) == 0
+    out = capsys.readouterr().out
+    assert "ok    private" in out and "no connector here" not in out
+
+
+def test_without_the_flag_no_connector_stays_ok(no_server, live_tree, capsys):
+    live_tree.record.unlink()
+    assert smoke.main(["private"]) == 0
+    assert "no connector here" in capsys.readouterr().out
+
+
 def test_private_check_still_checks_this_process_without_a_connector(no_server, live_tree, tmp_path, monkeypatch, capsys):
     live_tree.record.unlink()
     monkeypatch.setattr(private, "DIR", tmp_path / "checkout")

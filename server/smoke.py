@@ -1,4 +1,6 @@
-"""One read-only check per tool group. Exit 1 if any fail. Usage: uv run smoke.py [group ...]"""
+"""One read-only check per tool group. Exit 1 if any fail. Usage: uv run smoke.py [--expect-connector] [group ...]
+
+--expect-connector (the server Mac's deploy): the private check fails when no connector is running on this Mac."""
 import asyncio
 import json
 import os
@@ -42,25 +44,23 @@ def check_proposals():
     proposals_mcp.read_token()
 
 
-def check_private():
-    """On a Mac with the harness's live tree (private.LIVE), the private folder must be that tree: always in this
-    process (run as the deploy runs it, after private-env.sh), and in the running connector when this Mac runs one
-    (it says which folder it reads in server.RUNNING_FILE when it starts): a connector reading the checkout would serve
-    skills, rules and settings nobody approved. A Mac with a live tree but no running connector (no record, or the
-    record's pid has exited) checks only this process. A Mac without a live tree has nothing to check."""
-    import private
+EXPECT_CONNECTOR = False   # --expect-connector: this Mac must be running the connector (the server Mac's deploy)
+
+
+def _unsaid(e: Exception) -> RuntimeError:
+    return RuntimeError(f"the running connector hasn't said which private folder it reads ({e!r})")
+
+
+def _running_record():
+    """The running connector's record (server.RUNNING_FILE) when its pid is alive, else None. A record that can't be
+    read is an error: a connector may be running and not saying what it reads."""
     import server
-    if not private.LIVE.is_dir():
-        return None
-    live = private.LIVE.resolve()
-    if private.DIR.resolve() != live:
-        raise RuntimeError(f"this check reads {private.DIR}, not the live tree {live} (source private-env.sh)")
     try:
         text = server.RUNNING_FILE.read_text(encoding="utf-8")
     except FileNotFoundError:
-        return "no connector here"
+        return None
     except OSError as e:
-        raise RuntimeError(f"the running connector hasn't said which private folder it reads ({e!r})") from None
+        raise _unsaid(e) from None
     try:
         running = json.loads(text)
         pid = running["pid"]
@@ -68,15 +68,39 @@ def check_private():
             raise ValueError(f"pid {pid!r}")
         os.kill(pid, 0)
     except ProcessLookupError:
-        return "no connector here"
+        return None
     except PermissionError:
         pass
     except (ValueError, KeyError, TypeError, OverflowError) as e:
-        raise RuntimeError(f"the running connector hasn't said which private folder it reads ({e!r})") from None
+        raise _unsaid(e) from None
+    return running
+
+
+def check_private():
+    """On a Mac with the harness's live tree (private.LIVE), the private folder must be that tree: always in this
+    process (run as the deploy runs it, after private-env.sh), and in the running connector when this Mac runs one
+    (it says which folder it reads in server.RUNNING_FILE when it starts): a connector reading the checkout would serve
+    skills, rules and settings nobody approved. A Mac with a live tree but no running connector (no record, or the
+    record's pid has exited) checks only this process and says "no connector here". With --expect-connector (the
+    server Mac's deploy) no running connector is a failure, live tree or not, so a crashed connector can't pass."""
+    import private
+    live = private.LIVE.resolve() if private.LIVE.is_dir() else None
+    if live is None and not EXPECT_CONNECTOR:
+        return None
+    if live is not None and private.DIR.resolve() != live:
+        raise RuntimeError(f"this check reads {private.DIR}, not the live tree {live} (source private-env.sh)")
+    running = _running_record()
+    if running is None:
+        if EXPECT_CONNECTOR:
+            raise RuntimeError("no connector is running on this Mac, and --expect-connector says one should be "
+                               "(no running.json, or its pid has exited)")
+        return "no connector here"
+    if live is None:
+        return None
     try:
         folder = Path(running["private_dir"])
     except (KeyError, TypeError) as e:
-        raise RuntimeError(f"the running connector hasn't said which private folder it reads ({e!r})") from None
+        raise _unsaid(e) from None
     if folder.resolve() != live:
         raise RuntimeError(f"the running connector reads {folder}, not the live tree {live}")
     return None
@@ -139,5 +163,18 @@ def run(groups):
     return asyncio.run(run_checks(groups))
 
 
+def main(argv):
+    """smoke.py [--expect-connector] [group ...]"""
+    global EXPECT_CONNECTOR
+    args = list(argv)
+    expect = "--expect-connector" in args
+    groups = [a for a in args if a != "--expect-connector"]
+    before, EXPECT_CONNECTOR = EXPECT_CONNECTOR, expect
+    try:
+        return run(groups)
+    finally:
+        EXPECT_CONNECTOR = before
+
+
 if __name__ == "__main__":
-    sys.exit(run(sys.argv[1:]))
+    sys.exit(main(sys.argv[1:]))
