@@ -25,3 +25,6 @@ def _usage_log_in_tmp(tmp_path, monkeypatch):
     monkeypatch.setattr(home_mcp, "TOKEN_PATH", tmp_path / "config" / "home-token")
     import server
     monkeypatch.setattr(server, "TOOLS_FILE", tmp_path / "tools.json")
+    monkeypatch.setattr(server, "RUNNING_FILE", tmp_path / "running.json")
+    import private  # a live tree on the Mac running the tests must not change what they check
+    monkeypatch.setattr(private, "LIVE", tmp_path / "no-live-tree")

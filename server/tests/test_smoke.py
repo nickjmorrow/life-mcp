@@ -1,4 +1,7 @@
 # tests/test_smoke.py
+import json
+import os
+import subprocess
 from types import SimpleNamespace
 
 import httpx
@@ -13,7 +16,7 @@ import usage_log
 
 def test_checks_cover_every_group():
     import server
-    assert set(smoke.CHECKS) | set(smoke.LOCAL_CHECKS) == {"logseq"} | {g.label for g in server.GROUPS}
+    assert set(smoke.CHECKS) | set(smoke.LOCAL_CHECKS) == {"logseq", "private"} | {g.label for g in server.GROUPS}
     assert not set(smoke.CHECKS) & set(smoke.LOCAL_CHECKS)
 
 def test_every_check_is_read_only():
@@ -106,3 +109,77 @@ def test_every_group_is_run_when_none_is_named(no_server, approvals_token, monke
     monkeypatch.setattr(smoke, "call", call)
     assert smoke.run([]) == 0
     assert len(ran) == len(smoke.CHECKS) and "ok    memory" in capsys.readouterr().out
+
+
+# --- the private folder: the live tree, here and in the running connector -----------------------------------------
+
+
+@pytest.fixture
+def live_tree(tmp_path, monkeypatch):
+    """A made-up live tree, this process reading it, and the running connector's record saying it does too."""
+    import server
+    live = tmp_path / "live"
+    live.mkdir()
+    monkeypatch.setattr(private, "LIVE", live)
+    monkeypatch.setattr(private, "DIR", live)
+    record = tmp_path / "running.json"
+    record.write_text(json.dumps({"pid": os.getpid(), "private_dir": str(live), "started_at": "2026-10-05T07:00:00"}))
+    monkeypatch.setattr(server, "RUNNING_FILE", record)
+    return SimpleNamespace(live=live, record=record)
+
+
+def test_private_check_passes_when_both_read_the_live_tree(no_server, live_tree, capsys):
+    assert smoke.run(["private"]) == 0
+    assert "ok    private      live tree" in capsys.readouterr().out
+
+
+def test_private_check_has_nothing_to_check_without_a_live_tree(no_server, tmp_path, monkeypatch):
+    monkeypatch.setattr(private, "LIVE", tmp_path / "none")
+    monkeypatch.setattr(private, "DIR", tmp_path / "checkout")
+    assert smoke.run(["private"]) == 0
+
+
+def test_private_check_fails_when_this_process_reads_the_checkout(no_server, live_tree, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(private, "DIR", tmp_path / "checkout")
+    assert smoke.run(["private"]) == 1
+    assert "FAIL  private" in capsys.readouterr().out
+
+
+def test_private_check_fails_when_the_connector_reads_the_checkout(no_server, live_tree, tmp_path, capsys):
+    live_tree.record.write_text(json.dumps({"pid": os.getpid(), "private_dir": str(tmp_path / "checkout")}))
+    assert smoke.run(["private"]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL  private" in out and "running connector reads" in out
+
+
+def test_private_check_fails_without_the_connectors_record(no_server, live_tree, capsys):
+    live_tree.record.unlink()
+    assert smoke.run(["private"]) == 1
+    assert "hasn't said" in capsys.readouterr().out
+
+
+def test_private_check_fails_when_the_record_is_from_a_connector_that_stopped(no_server, live_tree, capsys):
+    proc = subprocess.Popen(["/usr/bin/true"])
+    proc.wait()  # a pid that has exited (our own child's, reaped)
+    live_tree.record.write_text(json.dumps({"pid": proc.pid, "private_dir": str(live_tree.live)}))
+    assert smoke.run(["private"]) == 1
+    assert "isn't running" in capsys.readouterr().out
+
+
+def test_smoke_never_writes_the_running_servers_tool_list(monkeypatch):
+    import server
+    real = server.TOOLS_FILE  # the conftest's temp path stands in for the real one
+    monkeypatch.setattr(smoke, "_server", None)
+    monkeypatch.setattr(server, "mount_all", lambda *a, **k: [])
+    assert smoke.load_server() is server
+    assert server.TOOLS_FILE != real and server.TOOLS_FILE.parent.name.startswith("smoke-")
+    server.TOOLS_FILE.parent.rmdir()
+
+
+def test_the_server_says_which_private_folder_it_reads(tmp_path, monkeypatch):
+    import server
+    monkeypatch.setattr(server, "RUNNING_FILE", tmp_path / "life-mcp" / "running.json")
+    server.write_running()
+    record = json.loads(server.RUNNING_FILE.read_text())
+    assert record["pid"] == os.getpid() and record["private_dir"] == str(private.DIR)
+    assert oct(server.RUNNING_FILE.stat().st_mode & 0o777) == "0o600"

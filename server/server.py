@@ -730,6 +730,22 @@ def mount(g: Group, target: FastMCP | None = None) -> bool:
 TOOLS_FILE = Path.home() / "Library" / "Application Support" / "life-mcp" / "tools.json"
 
 
+# Written when the HTTP server starts: its pid, when it started and the private folder it reads (private.DIR), so a
+# check outside it (smoke.py, run by the deploy) can confirm that the running connector serves the folder it should.
+RUNNING_FILE = Path.home() / "Library" / "Application Support" / "life-mcp" / "running.json"
+
+
+def write_running() -> None:
+    """Say in RUNNING_FILE which private folder this process reads. A failure is a log line, never a stop."""
+    import private
+    record = {"pid": os.getpid(), "private_dir": str(private.DIR),
+              "started_at": dt.datetime.now().astimezone().isoformat(timespec="seconds")}
+    try:
+        _write_private(RUNNING_FILE, json.dumps(record) + "\n")
+    except Exception as e:
+        print(f"{RUNNING_FILE.name} not written: {e!r}", file=sys.stderr)
+
+
 def _write_private(path: Path, text: str) -> None:
     """Replace a file whole (600, in a 700 folder): a reader sees the old text or the new, never half."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -800,4 +816,5 @@ if __name__ == "__main__":
         mcp.add_middleware(OnlyMe())
         mcp.add_middleware(ChatLog())
         mcp.add_middleware(RecallReminder())
+        write_running()
         mcp.run(transport="http", host=HOST, port=PORT)
