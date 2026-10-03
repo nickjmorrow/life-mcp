@@ -526,14 +526,33 @@ class _Tx:
 class MemoryStore:
     """Topic files in a git repo under `root`. `guard(text)` raises to refuse new text; `commit=False` skips git;
     `on_change(store)` runs after a write, before its commit, and returns extra files (relative path -> text) to
-    write and commit with it (it may read the store, never write to it)."""
+    write and commit with it (it may read the store, never write to it).
+
+    Repo mode (`repo` given): `root` is a folder inside a larger repo (the harness's memory/). Writes commit only that
+    folder, never anything else that is dirty or staged, and only while the repo is on `branch`; the lock is the repo's
+    own (`lock_path`, default `<git dir>/agent.lock`), shared with whatever else commits there, and never a file inside
+    `root`. `after_commit(sha)` runs once the lock is released (a push, say); its failure never fails the write."""
 
     def __init__(self, root: Path, guard: Callable[[str], None] | None = None, commit: bool = True,
-                 on_change: Callable[["MemoryStore"], dict[str, str]] | None = None):
+                 on_change: Callable[["MemoryStore"], dict[str, str]] | None = None, *,
+                 repo: Path | None = None, branch: str | None = None, lock_path: Path | None = None,
+                 after_commit: Callable[[str], None] | None = None):
         self.root = Path(root)
         self.guard = guard
         self.commit = commit
         self.on_change = on_change
+        self.repo = Path(repo) if repo is not None else None
+        self.branch = branch
+        self.after_commit = after_commit
+        self._lock_path = Path(lock_path) if lock_path is not None else None
+        self._rel_root = ""
+        if self.repo is not None:
+            try:
+                self._rel_root = self.root.resolve().relative_to(self.repo.resolve()).as_posix()
+            except ValueError:
+                raise ValueError(f"The memory folder {self.root} has to be inside the repo {self.repo}.") from None
+            if self._rel_root == ".":
+                self._rel_root = ""
         self._busy = threading.local()
 
     # -- reading (no lock: every file is replaced whole) --
@@ -595,7 +614,9 @@ class MemoryStore:
 
     def head(self) -> str:
         """The repo's HEAD sha, or "" before the first commit (or with commit=False)."""
-        if not (self.root / ".git").exists():
+        if self.repo is not None and not self.commit:
+            return ""
+        if not ((self.repo or self.root) / ".git").exists():
             return ""
         proc = self._git("rev-parse", "--verify", "-q", "HEAD", check=False)
         return proc.stdout.strip() if proc.returncode == 0 else ""
@@ -603,9 +624,11 @@ class MemoryStore:
     def last_commit(self, rel: str) -> tuple[str, int] | None:
         """(sha, commit time in seconds since 1970) of the newest commit that changed this file (a path relative to the
         root), or None if none did, or there's no repo."""
-        if not (self.root / ".git").exists():
+        if self.repo is not None and not self.commit:
             return None
-        proc = self._git("log", "-1", "--format=%H %ct", "--", rel, check=False)
+        if not ((self.repo or self.root) / ".git").exists():
+            return None
+        proc = self._git("log", "-1", "--format=%H %ct", "--", self._in_repo(rel), check=False)
         found = proc.stdout.split()
         return (found[0], int(found[1])) if proc.returncode == 0 and len(found) == 2 else None
 
@@ -682,10 +705,12 @@ class MemoryStore:
                 changed = [self._put(rel, text, undo) for rel, text in made.items()]
                 if not any(changed) or not self.commit:
                     return False
-                return self._commit(subject)
+                done = self._commit(subject)
             except BaseException:
                 self._rollback(undo)
                 raise
+        self._notify()
+        return done
 
     # -- reading helpers --
 
@@ -939,7 +964,8 @@ class MemoryStore:
             tx.highest()  # before the work changes anything
             reply = work(tx)
             self._flush(tx)
-            return reply
+        self._notify()
+        return reply
 
     @contextmanager
     def _exclusive(self):
@@ -950,7 +976,9 @@ class MemoryStore:
                                "but not write to it.")
         with self._locked():
             self._busy.on = True
+            self._busy.sha = None
             try:
+                self._check_branch()
                 yield
             finally:
                 self._busy.on = False
@@ -958,7 +986,7 @@ class MemoryStore:
     @contextmanager
     def _locked(self):
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        fd = os.open(self.root / _LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+        fd = os.open(self._lock_file(), os.O_RDWR | os.O_CREAT, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             yield
@@ -1053,8 +1081,54 @@ class MemoryStore:
             return False
         return (self.root / path).resolve().is_relative_to(self.root.resolve())
 
+    def _in_repo(self, rel: str) -> str:
+        """A path relative to the memory folder, as git (running in the repo) wants it."""
+        return f"{self._rel_root}/{rel}" if self._rel_root else rel
+
+    def _lock_file(self) -> Path:
+        if self._lock_path is not None:
+            return self._lock_path
+        if self.repo is None:
+            return self.root / _LOCK
+        dot_git = self.repo / ".git"
+        if dot_git.is_dir():
+            return dot_git / "agent.lock"
+        proc = self._git("rev-parse", "--git-common-dir", check=False)  # a linked worktree shares its main repo's lock
+        common = Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else dot_git
+        return (common if common.is_absolute() else self.repo / common) / "agent.lock"
+
+    def _check_branch(self) -> None:
+        if self.repo is None or self.branch is None or not self.commit:
+            return
+        proc = self._git("symbolic-ref", "--short", "HEAD", check=False)
+        here = proc.stdout.strip() if proc.returncode == 0 else "(no branch)"
+        if here != self.branch:
+            raise MemoryError_(f"Memory writes go to the {self.branch} branch only; this copy is on {here}.")
+
+    def _notify(self) -> None:
+        """Tell after_commit about the commit just made, now that the lock is let go. Never fails the write."""
+        sha = getattr(self._busy, "sha", None)
+        self._busy.sha = None
+        if not sha or self.after_commit is None:
+            return
+        try:
+            self.after_commit(sha)
+        except Exception as e:
+            print(f"Memory: after_commit failed ({e!r}); the change is saved.", file=sys.stderr)
+
+    def _commit_in_repo(self, message: str) -> bool:
+        path = self._rel_root or "."
+        self._git("add", "-A", "--", path)
+        if self._git("diff", "--cached", "--quiet", "--", path, check=False).returncode == 0:
+            return False  # nothing changed in the memory folder
+        self._git("commit", "-q", "--no-verify", "--only", "-m", message, "--", path)
+        self._busy.sha = self._git("rev-parse", "HEAD").stdout.strip()
+        return True
+
     def _commit(self, message: str) -> bool:
         """Commit whatever is on disk (`git add -A`), starting the repo if there isn't one. True if it committed."""
+        if self.repo is not None:
+            return self._commit_in_repo(message)
         if not (self.root / ".git").exists():
             self._git("init", "-q", "-b", "main")
         exclude = self.root / ".git" / "info" / "exclude"  # keep the lock and temp files out of the repo
@@ -1068,11 +1142,12 @@ class MemoryStore:
         if self._git("diff", "--cached", "--quiet", check=False).returncode == 0:
             return False  # nothing changed
         self._git("commit", "-q", "--no-verify", "-m", message)
+        self._busy.sha = self._git("rev-parse", "HEAD").stdout.strip()
         return True
 
     def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
         proc = subprocess.run(["git", "-c", "commit.gpgsign=false", "-c", f"core.excludesFile={os.devnull}", *args],
-                              cwd=self.root, env=_git_env(), stdin=subprocess.DEVNULL, capture_output=True,
+                              cwd=self.repo or self.root, env=_git_env(), stdin=subprocess.DEVNULL, capture_output=True,
                               text=True, encoding="utf-8", timeout=_GIT_TIMEOUT)
         if check and proc.returncode != 0:
             raise RuntimeError(f"git {args[0]} failed in the memory folder: {(proc.stderr or proc.stdout).strip()}")

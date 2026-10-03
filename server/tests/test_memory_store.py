@@ -1619,3 +1619,162 @@ def test_malformed_header_is_reported_in_plain_words(tmp_store):
     with pytest.raises(MemoryError_, match="header"):
         tmp_store.save("a fact", "home", "phone")
     assert ids(tmp_store, "health") == []  # other topics still work
+
+
+# --- repo mode: memory/ inside a larger repo, on one branch ---------------------------------------------------
+
+
+class RepoStore:
+    """A temp repo on branch dev with memory/ inside it, and a store writing there."""
+
+    def __init__(self, tmp_path: Path, **kw):
+        self.repo = tmp_path / "harness"
+        self.repo.mkdir()
+        run = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=self.repo,
+                                        capture_output=True, text=True, check=True)
+        run("init", "-q", "-b", "dev")
+        (self.repo / "RULES.md").write_text("rules\n")
+        fixture = fixture_root(self.repo)
+        run("add", "-A")
+        run("commit", "-q", "-m", "start")
+        self.root = fixture
+        self.store = MemoryStore(self.root, repo=self.repo, branch="dev", **kw)
+
+
+@pytest.fixture
+def repo_store(tmp_path):
+    return RepoStore(tmp_path)
+
+
+def test_repo_mode_commits_only_memory_paths(repo_store):
+    (repo_store.repo / "RULES.md").write_text("edited\n")  # a dirty file outside memory/
+    repo_store.store.save("has a dog, Biscuit", "home", "phone")
+    assert sorted(git(repo_store.repo, "show", "--name-only", "--format=", "HEAD").split()) == [
+        "memory/.ids.json", "memory/topics/home.md"]
+    assert "RULES.md" in git(repo_store.repo, "status", "--porcelain")  # still dirty, never staged
+
+
+def test_repo_mode_does_not_commit_other_staged_files(repo_store):
+    (repo_store.repo / "RULES.md").write_text("staged\n")
+    git(repo_store.repo, "add", "RULES.md")
+    repo_store.store.save("has a dog, Biscuit", "home", "phone")
+    assert "RULES.md" not in git(repo_store.repo, "show", "--name-only", "--format=", "HEAD")
+
+
+def test_repo_mode_refuses_other_branch(repo_store):
+    git(repo_store.repo, "checkout", "-q", "-b", "main")
+    before = git(repo_store.repo, "rev-parse", "HEAD")
+    with pytest.raises(MemoryError_, match="dev"):
+        repo_store.store.save("has a dog, Biscuit", "home", "phone")
+    assert git(repo_store.repo, "rev-parse", "HEAD") == before
+    assert "Biscuit" not in (repo_store.root / "topics" / "home.md").read_text()
+
+
+def test_repo_mode_lock_is_shared(repo_store, tmp_path):
+    lock = repo_store.repo / ".git" / "agent.lock"
+    child = subprocess.Popen([sys.executable, "-c", (
+        "import fcntl,os,sys,time\n"
+        f"fd=os.open({str(lock)!r}, os.O_RDWR|os.O_CREAT)\n"
+        "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+        "print('held', flush=True)\n"
+        "time.sleep(1.5)\n")], stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == "held"
+        started = time.monotonic()
+        repo_store.store.save("has a dog, Biscuit", "home", "phone")
+        assert time.monotonic() - started > 0.8  # waited for the other holder
+    finally:
+        child.wait()
+
+
+def test_no_lock_file_inside_memory_folder(repo_store):
+    repo_store.store.save("has a dog, Biscuit", "home", "phone")
+    assert not (repo_store.root / ".lock").exists()
+    assert (repo_store.repo / ".git" / "agent.lock").exists()
+
+
+def test_custom_lock_path_is_used(tmp_path):
+    lock = tmp_path / "locks" / "agent.lock"
+    lock.parent.mkdir()
+    rs = RepoStore(tmp_path, lock_path=lock)
+    rs.store.save("has a dog, Biscuit", "home", "phone")
+    assert lock.exists()
+
+
+def test_after_commit_gets_sha_after_lock_released(tmp_path):
+    seen = []
+    lock = tmp_path / "agent.lock"
+
+    def after(sha):
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # raises if the store still holds it
+        finally:
+            os.close(fd)
+        seen.append(sha)
+
+    rs = RepoStore(tmp_path, lock_path=lock, after_commit=after)
+    rs.store.save("has a dog, Biscuit", "home", "phone")
+    assert seen == [git(rs.repo, "rev-parse", "HEAD").strip()]
+
+
+def test_after_commit_error_does_not_fail_save(tmp_path, capsys):
+    def boom(sha):
+        raise OSError("push failed")
+
+    rs = RepoStore(tmp_path, after_commit=boom)
+    reply = rs.store.save("has a dog, Biscuit", "home", "phone")
+    assert reply and "Biscuit" in (rs.root / "topics" / "home.md").read_text()
+    assert "push failed" in capsys.readouterr().err
+
+
+def test_after_commit_not_called_when_nothing_committed(tmp_path):
+    calls = []
+    rs = RepoStore(tmp_path, after_commit=calls.append)
+    rs.store.save("has a dog, Biscuit", "home", "phone")
+    rs.store.save("has a dog, Biscuit", "home", "phone")  # an exact repeat changes nothing
+    assert len(calls) == 1
+
+
+def test_read_only_store_runs_no_git(tmp_path, monkeypatch):
+    root = fixture_root(tmp_path)
+    store = MemoryStore(root, commit=False)
+
+    def no(*a, **k):
+        raise AssertionError("git was run")
+
+    monkeypatch.setattr(memory_store.subprocess, "run", no)
+    assert store.head() == ""
+    assert store.last_commit("core.md") is None
+    assert store.topics()
+
+
+def test_repo_mode_must_have_root_inside_repo(tmp_path):
+    repo = tmp_path / "harness"
+    repo.mkdir()
+    with pytest.raises(ValueError, match="inside"):
+        MemoryStore(tmp_path / "elsewhere", repo=repo, branch="dev")
+
+
+def test_repo_mode_head_and_last_commit(repo_store):
+    repo_store.store.save("has a dog, Biscuit", "home", "phone")
+    assert repo_store.store.head() == git(repo_store.repo, "rev-parse", "HEAD").strip()
+    sha, when = repo_store.store.last_commit("topics/home.md")
+    assert sha == repo_store.store.head() and when > 0
+
+
+def test_repo_mode_in_a_linked_worktree(tmp_path):
+    main = tmp_path / "main-copy"
+    main.mkdir()
+    run = lambda *a, cwd=main: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=cwd,
+                                              capture_output=True, text=True, check=True)
+    run("init", "-q", "-b", "dev")
+    fixture_root(main)
+    run("add", "-A")
+    run("commit", "-q", "-m", "start")
+    work = tmp_path / "wt"
+    run("worktree", "add", "-q", "-b", "job/x", str(work))
+    store = MemoryStore(work / "memory", repo=work, branch="job/x")
+    store.save("has a dog, Biscuit", "home", "phone")
+    assert git(work, "log", "-1", "--format=%s").strip()
+    assert (main / ".git" / "agent.lock").exists()  # the shared git dir's lock, not the worktree's
