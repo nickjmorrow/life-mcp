@@ -10,8 +10,10 @@ It holds, in order:
 
 Every memory write rebuilds it in the same commit (MemoryStore's on_change is bundle_files), so git shows exactly what
 Claude was told on any day. read() also rebuilds and commits it first when it's missing, or when RULES.md or the memory
-repo has changed since the bundle was last committed (a rule edit; a hand edit or an import committed without it). The
-rebuild is built under the store's lock (see write), so it can't put an older bundle over a newer one.
+repo has changed since the bundle was last committed (a rule edit; a hand edit or an import committed without it), but
+only when the rebuilt text differs from the file: a no-op rebuild never takes the store's lock. The rebuild is built
+under the store's lock (see write), so it can't put an older bundle over a newer one. A RULES.md that can't be read
+serves the saved bundle.
 
     phone    memory_recall() with no topic: the bundle, then the skills' index (read fresh each time)
     laptop   the SessionStart hook reads bundle.md (from a mirror of the memory repo), nothing more
@@ -104,15 +106,41 @@ def _stale(store: MemoryStore, rules_path: Path) -> bool:
         return False  # no RULES.md to compare (a checkout may be swapping it): keep serving the bundle we have
 
 
+def _on_disk(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def _current(store: MemoryStore) -> str:
-    """The bundle's text, rebuilt and committed first if it's stale."""
+    """The bundle's text, rebuilt and committed first if it's stale and the rebuild would change it.
+
+    The new text is built first without the lock (building only reads) and compared with the file: a stale flag that a
+    rebuild can't clear (a commit that left the bundle's text the same, so nothing was committed) must not make every
+    recall wait for the store's write lock behind a slow writer. Only a bundle that really differs is rebuilt under the
+    lock (write builds it again there, so it can't be older than a write that commits first). A RULES.md that can't be
+    read (permissions, not UTF-8) serves the bundle already on disk, with a line on stderr; with none, the error
+    stands."""
+    path = store.root / BUNDLE
     if _stale(store, RULES_PATH):
+        try:
+            fresh = build(store, RULES_PATH)
+        except (OSError, UnicodeDecodeError) as e:
+            saved = _on_disk(path)
+            if saved is None:
+                raise
+            print(f"Context: couldn't read RULES.md or memory to rebuild {BUNDLE} ({e!r}); serving the saved one.",
+                  file=sys.stderr)
+            return saved
+        if _on_disk(path) == fresh:
+            return fresh
         try:
             write(store)
         except Exception as e:  # a stuck git or a full disk: the text is still right, so serve it unsaved
             print(f"Context: couldn't rebuild or save {BUNDLE} ({e!r}).", file=sys.stderr)
-            return build(store, RULES_PATH)  # (if the build itself is what's broken, this raises the same error)
-    return (store.root / BUNDLE).read_text(encoding="utf-8")
+            return fresh
+    return path.read_text(encoding="utf-8")
 
 
 def _skill_index() -> str:

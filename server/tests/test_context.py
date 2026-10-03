@@ -428,3 +428,70 @@ def test_cli_runs_from_any_folder_and_honors_the_private_folder(tmp_path):
     assert phone.returncode == 0, phone.stderr
     assert phone.stdout.startswith(saved) and "research (/research)" in phone.stdout
     assert run("--print", "tablet").returncode == 2
+
+
+# --- a stale flag that a rebuild can't clear, and a RULES.md that can't be read -----------------------------------
+
+
+def reword_by_hand(root):
+    """Reword a topic entry and commit it by hand: the bundle's text (counts and about lines) stays the same, so a
+    rebuild has nothing to commit and the bundle's last commit stays behind HEAD."""
+    home = root / "topics" / "home.md"
+    home.write_text(home.read_text().replace("has a dog, Biscuit", "has a dog called Biscuit"))
+    git(root, "add", "-A")
+    git(root, "-c", "user.name=Tester", "-c", "user.email=tester@example.com", "-c", "commit.gpgsign=false",
+        "commit", "-q", "--no-verify", "-m", "by hand")
+
+
+def test_a_stale_flag_whose_rebuild_changes_nothing_never_takes_the_lock(tmp_env, monkeypatch):
+    set_mtime(tmp_env.rules, time.time() - 3600)
+    tmp_env.store.save("has a dog, Biscuit", "home", "phone")
+    reword_by_hand(tmp_env.root)
+    assert context._stale(tmp_env.store, tmp_env.rules)  # HEAD is past the bundle's last commit, for good
+    good = tmp_env.bundle.read_text()
+    monkeypatch.setattr(context, "write", lambda store: pytest.fail("took the store's write lock for a no-op"))
+    for _ in range(3):  # every recall, not just the first
+        assert context.read("laptop", tmp_env.store) == good
+        assert context.read("phone", tmp_env.store) == good
+
+
+def test_a_stale_bundle_that_differs_is_still_rebuilt_under_the_lock(tmp_env):
+    set_mtime(tmp_env.rules, time.time() - 3600)
+    tmp_env.store.save("has a dog, Biscuit", "home", "phone")
+    reword_by_hand(tmp_env.root)
+    tmp_env.rules.write_text("# Rules\n\n- [R1] Answer in one line.\n")
+    set_mtime(tmp_env.rules, time.time() + 60)
+    before = commit_count(tmp_env.root)
+    out = context.read("laptop", tmp_env.store)
+    assert "Answer in one line." in out and tmp_env.bundle.read_text() == out
+    assert commit_count(tmp_env.root) == before + 1
+
+
+@pytest.mark.parametrize("damage", ["unreadable", "not utf-8"])
+def test_a_rules_file_that_cannot_be_read_serves_the_bundle_on_disk(tmp_env, capsys, damage):
+    set_mtime(tmp_env.rules, time.time() - 3600)
+    tmp_env.store.save("has a dog, Biscuit", "home", "phone")
+    good = tmp_env.bundle.read_text()
+    if damage == "unreadable":
+        tmp_env.rules.chmod(0)
+    else:
+        tmp_env.rules.write_bytes(b"# Rules\n\n- [R1] \xff\xfe broken\n")
+    set_mtime(tmp_env.rules, time.time() + 60)  # newer than the bundle: stale
+    before = commit_count(tmp_env.root)
+    try:
+        assert context.read("laptop", tmp_env.store) == good
+        assert context.read("phone", tmp_env.store) == good
+    finally:
+        tmp_env.rules.chmod(0o600)
+    err = capsys.readouterr().err
+    assert "Context" in err and "RULES.md" in err
+    assert commit_count(tmp_env.root) == before and tmp_env.bundle.read_text() == good
+
+
+def test_a_rules_file_that_cannot_be_read_and_no_bundle_is_an_error(tmp_env):
+    tmp_env.rules.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            context.read("laptop", tmp_env.store)
+    finally:
+        tmp_env.rules.chmod(0o600)
