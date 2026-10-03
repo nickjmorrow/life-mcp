@@ -84,32 +84,48 @@ def test_memory_check_fails_when_a_memory_file_is_broken(no_server, capsys, clea
 
 
 @pytest.fixture
-def approvals_token(tmp_path, monkeypatch):
-    """The approvals service's token, as the private config names it (a temp file with a made-up token)."""
-    path = tmp_path / "propose-token"
-    path.write_text("tok-4f9a1c\n")
-    monkeypatch.setitem(private.CONFIG, "approvals", {"token_file": str(path)})
-    return path
+def harness_command(tmp_path, monkeypatch):
+    """A made-up harness command whose check-setup prints ok (or whatever the test writes into it)."""
+    script = tmp_path / "harness-command"
+    script.write_text('#!/bin/sh\n[ "$1" = check-setup ] && echo ok\n')
+    script.chmod(0o755)
+    monkeypatch.setitem(private.CONFIG, "harness", {"command": [str(script)]})
+    return script
 
 
-def test_proposals_check_passes_with_a_token_file_and_posts_nothing(no_server, approvals_token, monkeypatch, capsys):
-    def posted(*args, **kwargs):
-        raise AssertionError("the smoke check sent something to the approvals service")
-    monkeypatch.setattr(httpx, "AsyncClient", posted)  # a proposal left on the page by a health check would be noise
-    assert smoke.run(["proposals"]) == 0
+def test_changes_check_runs_check_setup_and_nothing_else(no_server, harness_command, capsys, tmp_path):
+    harness_command.write_text(f'#!/bin/sh\necho "$@" >> {tmp_path / "argv"}\necho ok\n')
+    assert smoke.run(["changes"]) == 0
+    assert "ok    changes      check-setup" in capsys.readouterr().out
+    assert (tmp_path / "argv").read_text().split() == ["check-setup"]  # no edit, no ship, no push
+
+
+def test_changes_check_fails_when_check_setup_does(no_server, harness_command, capsys):
+    harness_command.write_text("#!/bin/sh\necho 'no bot token' >&2\nexit 1\n")
+    assert smoke.run(["changes"]) == 1
     out = capsys.readouterr().out
-    assert "ok    proposals    token file" in out
-    assert "tok-4f9a1c" not in out  # it says the file is there, never what's in it
+    assert "FAIL  changes" in out and "no bot token" in out
 
 
-def test_proposals_check_fails_without_a_token_file(no_server, approvals_token, capsys):
-    approvals_token.unlink()
-    assert smoke.run(["proposals"]) == 1
+def test_changes_check_fails_without_a_command(no_server, monkeypatch, capsys):
+    monkeypatch.delitem(private.CONFIG, "harness", raising=False)
+    assert smoke.run(["changes"]) == 1
     out = capsys.readouterr().out
-    assert "FAIL  proposals" in out and "isn't set up" in out
+    assert "FAIL  changes" in out and "aren't set up" in out
 
 
-def test_every_group_is_run_when_none_is_named(no_server, approvals_token, monkeypatch, capsys):
+def test_memory_check_fails_when_saves_would_go_to_the_wrong_branch(no_server, harness_repo, capsys, clean_memory):
+    import subprocess
+    subprocess.run(["git", "checkout", "-q", "-b", "main"], cwd=harness_repo, check=True)
+    assert smoke.run(["memory"]) == 1
+    assert "dev" in capsys.readouterr().out
+
+
+def test_memory_check_passes_with_the_working_copy_on_dev(no_server, harness_repo, capsys, clean_memory):
+    assert smoke.run(["memory"]) == 0
+
+
+def test_every_group_is_run_when_none_is_named(no_server, harness_command, monkeypatch, capsys):
     ran = []
 
     async def call(client, tool, args):

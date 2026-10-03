@@ -4,6 +4,7 @@
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -35,13 +36,19 @@ def check_memory():
     memory_recall: that would count as a chat in the usage log."""
     import memory_mcp
     memory_mcp.read_store().topics()
+    if (memory_mcp.WORKING_COPY / ".git").exists():  # where saves are written must be on dev
+        memory_mcp.write_store().check_branch()
 
 
-def check_proposals():
-    """The proposal tools can't send without their token, so check that its file is there and has something in it.
-    Nothing is posted: a health check must not leave a proposal on the approvals page."""
-    import proposals_mcp
-    proposals_mcp.read_token()
+def check_changes():
+    """The change tools need the harness command; `check-setup` is its read-only self-test (it prints ok). Nothing is
+    proposed, committed or merged: a health check must leave no trace."""
+    import changes_mcp
+    argv = [*changes_mcp.command(), "check-setup"]
+    done = subprocess.run(argv, capture_output=True, text=True, timeout=changes_mcp.TIMEOUT_S, stdin=subprocess.DEVNULL)
+    if done.returncode != 0 or "ok" not in done.stdout:
+        raise RuntimeError(f"the change command's check-setup failed (exit {done.returncode}): "
+                           f"{(done.stderr or done.stdout).strip()[:300]}")
 
 
 EXPECT_CONNECTOR = False   # --expect-connector: this Mac must be running the connector (the server Mac's deploy)
@@ -109,7 +116,7 @@ def check_private():
 # Groups checked without a tool call: what the check calls, and the function that does it.
 LOCAL_CHECKS = {
     "memory": ("read_store().topics()", check_memory),
-    "proposals": ("token file", check_proposals),
+    "changes": ("check-setup", check_changes),
     "private": ("clean copy", check_private),
 }
 

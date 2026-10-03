@@ -1,5 +1,5 @@
 """The Life connector: Nicholas's Logseq graph (the tools below), plus every tool group in GROUPS
-(shared memory, proposals, skills, health, people, Hue, Eight Sleep, Reminders, Hevy, Music, the Apple TV
+(shared memory, changes, skills, health, people, Hue, Eight Sleep, Reminders, Hevy, Music, the Apple TV
 and Apple Home), mounted by mount_all at the bottom.
 
 claude.ai -> Tailscale Funnel (https://$PUBLIC_URL) -> this server on 127.0.0.1:8765
@@ -662,7 +662,7 @@ class Group:
 
 GROUPS: tuple[Group, ...] = (
     Group("memory", "memory_mcp", build=lambda m: m.build()),
-    Group("proposals", "proposals_mcp", build=lambda m: m.build()),
+    Group("changes", "changes_mcp", build=lambda m: m.build()),
     Group("health", "health_mcp", build=lambda m: m.build()),
     Group("people", "people_mcp", build=lambda m: m.build(cli)),
     Group("cards", "cards_mcp", build=lambda m: m.build(cli)),

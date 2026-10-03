@@ -978,7 +978,7 @@ class MemoryStore:
             self._busy.on = True
             self._busy.sha = None
             try:
-                self._check_branch()
+                self.check_branch()
                 yield
             finally:
                 self._busy.on = False
@@ -1097,7 +1097,8 @@ class MemoryStore:
         common = Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else dot_git
         return (common if common.is_absolute() else self.repo / common) / "agent.lock"
 
-    def _check_branch(self) -> None:
+    def check_branch(self) -> None:
+        """Raise MemoryError_ unless the repo is on the branch writes go to (repo mode only)."""
         if self.repo is None or self.branch is None or not self.commit:
             return
         proc = self._git("symbolic-ref", "--short", "HEAD", check=False)
