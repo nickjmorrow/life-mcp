@@ -45,7 +45,7 @@ def command() -> list[str]:
     found = str(first) if "/" in named[0] else shutil.which(named[0])
     if not found or not os.access(found, os.X_OK):
         raise ToolError(f"Changes aren't set up on {host.NAME}.")
-    return [found, *named[1:]]
+    return [found, *(str(Path(p).expanduser()) if p.startswith("~/") else p for p in named[1:])]   # no shell: expand ~ here
 
 
 def _run(sub: str, args: dict[str, Any], timeout: int) -> str:

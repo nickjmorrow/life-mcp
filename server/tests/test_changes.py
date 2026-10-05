@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import stat
+from pathlib import Path
 
 import pytest
 from fastmcp import Client
@@ -148,3 +149,13 @@ def test_no_memory_propose_or_rule_propose(client):
 def test_the_old_module_is_gone():
     with pytest.raises(ImportError):
         __import__("proposals_mcp")
+
+
+def test_a_tilde_in_any_part_of_the_command_is_expanded(tmp_path, monkeypatch):
+    script = tmp_path / "cmd"
+    script.write_text("#!/bin/sh\n")
+    script.chmod(0o755)
+    monkeypatch.setitem(private.CONFIG, "harness",
+                        {"command": [str(script), "--project", "~/Projects/x", "~/Library/y.py", "plain"]})
+    assert changes_mcp.command() == [str(script), "--project", str(Path("~/Projects/x").expanduser()),
+                                     str(Path("~/Library/y.py").expanduser()), "plain"]
