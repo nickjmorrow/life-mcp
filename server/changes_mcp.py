@@ -130,9 +130,11 @@ def build() -> FastMCP:
         commit: Annotated[str, Field(description="The commit on dev to take off (a sha from the open changes)")],
         change: Annotated[str, Field(description="The change, in a few plain words, as it should read in the record")],
         reason: Annotated[str, Field(description="Why he doesn't want it, in his words if he gave them")],
+        surface: Annotated[Surface | None, Field(description="Where you are: phone (the Claude app or the web), laptop (Claude Code), hob (voice) or job (a scheduled job)")] = None,
     ) -> str:
         """Take a change off the open changes because he doesn't want it, and record why (a "Declined:" commit) so the
         nightly and weekly jobs don't suggest it again."""
-        return await _call("drop", {"commit": commit, "change": change, "reason": reason})
+        return await _call("drop", {"commit": commit, "change": change, "reason": reason,
+                                    **({"surface": surface} if surface else {})})
 
     return mcp
