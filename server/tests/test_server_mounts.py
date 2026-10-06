@@ -17,6 +17,7 @@ EXPECTED = {
     "health": {"health_summary", "health_compare", "health_query"},
     "people": {"people_find", "people_keep_in_touch", "people_note"},
     "cards": {"cards_status", "cards_next", "cards_rate"},
+    "grimoire": {"grimoire_get_page", "grimoire_search", "grimoire_append", "grimoire_edit_block", "grimoire_undo_claude", "grimoire_cards_next"},
     "hue": {"hue_status", "hue_set_light", "hue_list_home"},
     "eight_sleep": {"eight_sleep_get_me"},
     "eight_sleep_extras": {"eight_sleep_list_alarms", "eight_sleep_pod_status", "eight_sleep_set_bedtime"},
