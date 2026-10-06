@@ -104,9 +104,50 @@ class Person:
     handles: set = field(default_factory=set)
 
 
-class PeopleData:
-    def __init__(self, cli=None, snap_dir: str = SNAP_DIR, today: dt.date | None = None, refresh=None):
+class LogseqPages:
+    """Person pages in the Logseq graph, through the injected Logseq CLI."""
+    name = "Logseq"
+
+    def __init__(self, cli):
         self.cli = cli
+
+    async def pages(self) -> list[dict]:
+        rows = (await self.cli("query", f"--query={PAGES_QUERY}", json_out=True))["result"] or []
+        props = (await self.cli("query", f"--query={PROPS_QUERY}", json_out=True))["result"] or []
+        aliases = (await self.cli("query", f"--query={ALIAS_QUERY}", json_out=True))["result"] or []
+        by_id = {pid: {"id": pid, "title": title, "props": {}, "aliases": []} for pid, title in rows}
+        for pid, alias in aliases:
+            if pid in by_id:
+                by_id[pid]["aliases"].append(alias)
+        for pid, pname, value in props:
+            if pid in by_id:
+                by_id[pid]["props"][pname.lower()] = value
+        return list(by_id.values())
+
+    async def text(self, title: str) -> str:
+        return await self.cli("show", f"--page={title}", "--linked-references=false")
+
+    async def exists(self, title: str) -> bool:
+        try:
+            await self.cli("show", f"--page={title}", "--level=1")
+            return True
+        except ToolError as e:
+            if "not found" in str(e).lower():
+                return False
+            raise
+
+    async def create_person(self, title: str) -> None:
+        await self.cli("upsert", "page", f"--page={title}", f"--update-tags={json.dumps(['person'])}", json_out=True)
+
+    async def add_note(self, title: str, text: str) -> None:
+        await self.cli("upsert", "block", f"--target-page={title}", "--pos=last-child", f"--content={text}", json_out=True)
+
+
+class PeopleData:
+    def __init__(self, cli=None, snap_dir: str = SNAP_DIR, today: dt.date | None = None, refresh=None, backend=None):
+        self.cli = cli
+        # where person pages live: Grimoire (grimoire_people.py), or the old way, Logseq through its CLI
+        self.backend = backend if backend is not None else (LogseqPages(cli) if cli is not None else None)
         self.snap = snap_dir
         self.today = today or dt.datetime.now(TZ).date()
         self.refresh = refresh if refresh is not None else self._kickstart
@@ -187,23 +228,13 @@ class PeopleData:
         return list(people.values())
 
     async def pages(self) -> list[dict]:
-        if self.cli is None:
+        if self.backend is None:
             return []
         try:
-            rows = (await self.cli("query", f"--query={PAGES_QUERY}", json_out=True))["result"] or []
-            props = (await self.cli("query", f"--query={PROPS_QUERY}", json_out=True))["result"] or []
-            aliases = (await self.cli("query", f"--query={ALIAS_QUERY}", json_out=True))["result"] or []
+            return await self.backend.pages()
         except ToolError:
             self.logseq_ok = False
             return []
-        by_id = {pid: {"id": pid, "title": title, "props": {}, "aliases": []} for pid, title in rows}
-        for pid, alias in aliases:
-            if pid in by_id:
-                by_id[pid]["aliases"].append(alias)
-        for pid, name, value in props:
-            if pid in by_id:
-                by_id[pid]["props"][name.lower()] = value
-        return list(by_id.values())
 
     async def persons(self) -> list[Person]:
         await self.ensure_fresh()
@@ -402,10 +433,10 @@ class PeopleData:
         return "\n".join(lines + ([self.stale_note] if self.stale_note else []))
 
     async def _page_text(self, person: Person) -> str | None:
-        if not person.page or self.cli is None:
+        if not person.page or self.backend is None:
             return None
         try:
-            return await self.cli("show", f"--page={person.page['title']}", "--linked-references=false")
+            return await self.backend.text(person.page["title"])
         except ToolError:
             self.logseq_ok = False
             return None
@@ -415,7 +446,7 @@ class PeopleData:
         c = p.contact or {}
         lines = [(c.get("name") or p.name) + (f" (closest match for '{self.guessed}')" if self.guessed else "")]
         if p.page and c:
-            lines.append(f"logseq page: {p.page['title']}")
+            lines.append(f"notes page: {p.page['title']}")
         if c.get("phones") or c.get("emails"):
             lines.append("reach: " + ", ".join(sorted(c.get("phones", set()) | c.get("emails", set()))))
         b = self._birthday(p)
@@ -432,9 +463,9 @@ class PeopleData:
             lines.append(f"keep in touch: {cad}{' (suggested)' if suggested else ''}")
         text = await self._page_text(p)
         if text:
-            lines += ["notes:", untrusted(text, "notes from their Logseq page, which can quote other people")]
+            lines += ["notes:", untrusted(text, "notes from their page in his notes, which can quote other people")]
         elif not self.logseq_ok:
-            lines.append("notes unavailable (Logseq isn't running)")
+            lines.append("notes unavailable (his notes app isn't reachable)")
         return "\n".join(lines + ([self.stale_note] if self.stale_note else []))
 
     async def catch_up(self, name: str, days: int = 30) -> str:
@@ -445,13 +476,7 @@ class PeopleData:
         return "\n".join(parts + ([untrusted("\n".join(msgs))] if msgs else []))
 
     async def _page_exists(self, title: str) -> bool:
-        try:
-            await self.cli("show", f"--page={title}", "--level=1")
-            return True
-        except ToolError as e:
-            if "not found" in str(e).lower():
-                return False
-            raise
+        return await self.backend.exists(title)
 
     async def note(self, name: str, text: str) -> str:
         await memory_mcp.tool_names()
@@ -472,7 +497,7 @@ class PeopleData:
         if new and await self._page_exists(title):
             raise ToolError(f"A page called '{title}' exists but isn't a person page. Tag it person first, or use another name.")
         if new:
-            await self.cli("upsert", "page", f"--page={title}", f"--update-tags={json.dumps(['person'])}", json_out=True)
-        await self.cli("upsert", "block", f"--target-page={title}", "--pos=last-child", f"--content={text}", json_out=True)
+            await self.backend.create_person(title)
+        await self.backend.add_note(title, text)
         self._persons = None
         return f"Noted on {title}'s page. End your reply with: saved to {title}'s page: {text}"
