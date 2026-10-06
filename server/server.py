@@ -666,6 +666,8 @@ GROUPS: tuple[Group, ...] = (
     Group("health", "health_mcp", build=lambda m: m.build()),
     Group("people", "people_mcp", build=lambda m: m.build(cli)),
     Group("cards", "cards_mcp", build=lambda m: m.build(cli)),
+    # Grimoire (his notes app) beside the Logseq tools above; Logseq is retired once he has moved over.
+    Group("grimoire", "grimoire_mcp", "grimoire", build=lambda m: m.build()),
     # claude.ai only connects on port 443, and Funnel's 443 is this server, so Hue is mounted here too.
     Group("hue", "hue_mcp", "hue", path=Path(__file__).resolve().parent.parent / "hue"),
     Group("eight_sleep", "eightsleep_proxy",

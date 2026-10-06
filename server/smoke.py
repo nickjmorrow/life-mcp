@@ -18,6 +18,7 @@ CHECKS = {
     "health": ("health_summary", {}),
     "people": ("people_keep_in_touch", {}),
     "cards": ("cards_status", {}),
+    "grimoire": ("grimoire_favorites", {}),
     "hue": ("hue_status", {}),
     "eight_sleep": ("eight_sleep_connection_status", {}),
     "eight_sleep_extras": ("eight_sleep_pod_status", {}),
