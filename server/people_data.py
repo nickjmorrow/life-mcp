@@ -1,14 +1,13 @@
-"""People: who's who and how Nicholas keeps in touch, from Messages, Contacts and Logseq.
+"""People: who's who and how Nicholas keeps in touch, from Messages, Contacts and Grimoire.
 
 Messages and Contacts are read from private copies made hourly by ~/.local/bin/people-snapshot
 (the only thing with Full Disk Access) in ~/Library/Application Support/life-mcp/people. Person
-notes live on Logseq pages tagged `person`, reached through the injected Logseq CLI.
+notes live on Grimoire pages tagged `person`, reached through the injected backend (grimoire_people.GrimoirePages).
 """
 import asyncio
 import datetime as dt
 import difflib
 import glob
-import json
 import os
 import re
 import secrets
@@ -33,14 +32,6 @@ CADENCE_DAYS = {"weekly": 7, "monthly": 30, "quarterly": 91, "yearly": 365}
 QUIET_MIN = 20   # "used to talk a lot": this many 1:1 messages in the last year
 QUIET_DAYS = 30  # ...and nothing for this long
 PLACEHOLDER = "￼"
-# Person pages, leaving out recycled ones and pages that are another page's alias.
-PAGES_QUERY = ('[:find ?p ?t :where [?p :block/tags ?tag] [?tag :block/title "person"] [?p :block/title ?t]'
-               ' (not [?p :logseq.property/deleted-at _]) (not-join [?p] [?o :block/alias ?p])]')
-ALIAS_QUERY = ('[:find ?p ?alias :where [?p :block/tags ?tag] [?tag :block/title "person"] [?p :block/alias ?a]'
-               ' [?a :block/title ?alias]]')
-PROPS_QUERY = ('[:find ?p ?name ?value :where [?p :block/tags ?tag] [?tag :block/title "person"] [?p ?a ?v]'
-               ' [(namespace ?a) ?ns] [(= ?ns "user.property")] [?pe :db/ident ?a] [?pe :block/title ?name]'
-               ' [?v :block/title ?value]]')
 NO_FDA = ("Can't read Messages/Contacts: the private copy in ~/Library/Application Support/life-mcp/people "
           "is missing. Give ~/.local/bin/people-snapshot Full Disk Access (System Settings > Privacy & "
           "Security > Full Disk Access), then it refreshes within the hour.")
@@ -104,50 +95,9 @@ class Person:
     handles: set = field(default_factory=set)
 
 
-class LogseqPages:
-    """Person pages in the Logseq graph, through the injected Logseq CLI."""
-    name = "Logseq"
-
-    def __init__(self, cli):
-        self.cli = cli
-
-    async def pages(self) -> list[dict]:
-        rows = (await self.cli("query", f"--query={PAGES_QUERY}", json_out=True))["result"] or []
-        props = (await self.cli("query", f"--query={PROPS_QUERY}", json_out=True))["result"] or []
-        aliases = (await self.cli("query", f"--query={ALIAS_QUERY}", json_out=True))["result"] or []
-        by_id = {pid: {"id": pid, "title": title, "props": {}, "aliases": []} for pid, title in rows}
-        for pid, alias in aliases:
-            if pid in by_id:
-                by_id[pid]["aliases"].append(alias)
-        for pid, pname, value in props:
-            if pid in by_id:
-                by_id[pid]["props"][pname.lower()] = value
-        return list(by_id.values())
-
-    async def text(self, title: str) -> str:
-        return await self.cli("show", f"--page={title}", "--linked-references=false")
-
-    async def exists(self, title: str) -> bool:
-        try:
-            await self.cli("show", f"--page={title}", "--level=1")
-            return True
-        except ToolError as e:
-            if "not found" in str(e).lower():
-                return False
-            raise
-
-    async def create_person(self, title: str) -> None:
-        await self.cli("upsert", "page", f"--page={title}", f"--update-tags={json.dumps(['person'])}", json_out=True)
-
-    async def add_note(self, title: str, text: str) -> None:
-        await self.cli("upsert", "block", f"--target-page={title}", "--pos=last-child", f"--content={text}", json_out=True)
-
-
 class PeopleData:
-    def __init__(self, cli=None, snap_dir: str = SNAP_DIR, today: dt.date | None = None, refresh=None, backend=None):
-        self.cli = cli
-        # where person pages live: Grimoire (grimoire_people.py), or the old way, Logseq through its CLI
-        self.backend = backend if backend is not None else (LogseqPages(cli) if cli is not None else None)
+    def __init__(self, snap_dir: str = SNAP_DIR, today: dt.date | None = None, refresh=None, backend=None):
+        self.backend = backend  # where person pages live (grimoire_people.GrimoirePages); None = no pages
         self.snap = snap_dir
         self.today = today or dt.datetime.now(TZ).date()
         self.refresh = refresh if refresh is not None else self._kickstart
@@ -155,7 +105,7 @@ class PeopleData:
         self.stale_note = None
         self._checked = False
         self.guessed = None
-        self.logseq_ok = True
+        self.notes_ok = True
         self._chat = None
         self._persons = None
 
@@ -233,7 +183,7 @@ class PeopleData:
         try:
             return await self.backend.pages()
         except ToolError:
-            self.logseq_ok = False
+            self.notes_ok = False
             return []
 
     async def persons(self) -> list[Person]:
@@ -438,7 +388,7 @@ class PeopleData:
         try:
             return await self.backend.text(person.page["title"])
         except ToolError:
-            self.logseq_ok = False
+            self.notes_ok = False
             return None
 
     async def find(self, name: str) -> str:
@@ -464,7 +414,7 @@ class PeopleData:
         text = await self._page_text(p)
         if text:
             lines += ["notes:", untrusted(text, "notes from their page in his notes, which can quote other people")]
-        elif not self.logseq_ok:
+        elif not self.notes_ok:
             lines.append("notes unavailable (his notes app isn't reachable)")
         return "\n".join(lines + ([self.stale_note] if self.stale_note else []))
 

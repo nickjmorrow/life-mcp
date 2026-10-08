@@ -18,6 +18,8 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+import skill_tools
+
 READ = {"readOnlyHint": True}
 WRITE = {"readOnlyHint": False, "destructiveHint": False}
 DESTROY = {"readOnlyHint": False, "destructiveHint": True}
@@ -230,10 +232,15 @@ async def cards_status(page: str | None = None, chapter: Annotated[str | None, F
     return await run(*args)
 
 
-@mcp.tool(annotations=READ)
+CARDS_SKILL = "flashcard-review"
+NEXT_DOC = "The next flashcards to study (due first, then new): id, front, back. Read the front; when he's answered, call cards_review."
+
+
+# claude.ai often finds this tool by search and never loads the skill, so the skill rides in its description.
+@mcp.tool(annotations=READ, description=skill_tools.describe(NEXT_DOC, CARDS_SKILL))
 async def cards_next(page: str | None = None, chapter: str | None = None,
                      limit: Annotated[int, Field(ge=1, le=20)] = 1) -> str:
-    """The next flashcards to study (due first, then new): id, front, back. Read the front; when he's answered, call cards_review."""
+    skill_tools.used(CARDS_SKILL)
     args = ["cards", "next", "--limit", str(limit)]
     if page: args += ["--page", page]
     if chapter: args += ["--chapter", chapter]

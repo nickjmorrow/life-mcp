@@ -4,11 +4,8 @@ from typing import Annotated
 from fastmcp import FastMCP
 from pydantic import Field
 
-import os
-from pathlib import Path
-
+import grimoire_people
 import people_data
-import private
 
 INSTRUCTIONS = (
     " The people_* tools know the people in Nicholas's life: people_find (who someone is, birthday,"
@@ -21,22 +18,12 @@ INSTRUCTIONS = (
 untrusted = people_data.untrusted  # the fence for text other people wrote
 
 
-def pick_backend(cli):
-    """Person pages live in Grimoire once the hub graph exists; config `people_backend = "logseq"` (or PEOPLE_BACKEND) keeps the old way."""
-    choice = (private.get("people_backend") or os.environ.get("PEOPLE_BACKEND") or "").lower()
-    hub = Path(os.path.expanduser(os.environ.get("GRIMOIRE_GRAPH") or "~/Grimoire-hub")) / "graph.sqlite"
-    if choice == "grimoire" or (choice != "logseq" and hub.exists()):
-        import grimoire_people
-        return grimoire_people.GrimoirePages()
-    return people_data.LogseqPages(cli) if cli is not None else None
-
-
-def build(cli) -> FastMCP:
+def build() -> FastMCP:
     mcp = FastMCP("People")
     READ = {"readOnlyHint": True}
 
     def data():
-        return people_data.PeopleData(cli=cli, backend=pick_backend(cli))
+        return people_data.PeopleData(backend=grimoire_people.GrimoirePages())
 
     @mcp.tool(annotations=READ)
     async def people_find(name: Annotated[str, Field(description="A name, first name or nickname")]) -> str:

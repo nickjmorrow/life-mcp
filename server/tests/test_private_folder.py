@@ -61,7 +61,7 @@ def test_private_env_leaves_things_alone_without_a_clean_copy(home, tmp_path):
     assert sourced(home) == str(tmp_path / "elsewhere")
 
 
-@pytest.mark.parametrize("launcher", ["run.sh", "cards-web.sh"])
+@pytest.mark.parametrize("launcher", ["run.sh"])
 def test_each_launcher_sources_private_env_after_zshrc_local_and_before_it_starts(launcher):
     lines = (SERVER / launcher).read_text().splitlines()
     rc = lines.index("source ~/.zshrc.local")

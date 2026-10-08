@@ -26,28 +26,19 @@ import usage_log
 from context import DATA_HEADER  # topic reads open with it too; CONTEXT.md (context.py) has it above the core facts
 from memory_store import MemoryError_, MemoryStore
 
-# The Logseq page memory used to live on. Memory is files now; server.py's block tools still refuse this page until
-# it is retired.
-PAGE = "Claude memories"
-
 # Memory comes back at the start of every chat, so text planted there (say, from a message someone sent him) would
 # steer every later Claude. Facts and preferences are fine; tool commands, instruction overrides and secrets are not,
 # and neither are rules for Claude (below), which go in as a change he merges.
-_TOOLS = r"\b(?:memory|people|home|hue|tv|music|eight_sleep|reminders|skill|health|hevy)_[a-z_]+\b"
+_TOOLS = r"\b(?:memory|people|home|hue|tv|music|eight_sleep|reminders|skill|health|hevy|grimoire)_[a-z_]+\b"
 _CALL = r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\("  # any snake_case_name( : a function call
 _OVERRIDE = r"\b(?:ignore|disregard|forget|override)\b[^.]{0,40}\b(?:instructions?|rules?|prompt|previous|above)\b"
 _SECRETS = (r"\b(?:api[ _-]?key|password|passcode|secret|token)s?\b\s*[:=]\s*\S{8,}"  # a secret value
             r"|\b(?:reveal|share|send|include|print|paste|post|email)\b[^.]{0,40}"
             r"\b(?:api[ _-]?keys?|passwords?|secrets?|tokens?|credentials?)\b")  # or asking to hand one over
 
-# Every tool the connector exposes. These are the Logseq tools in server.py; server.mount_all adds the rest
-# (set_tool_source), read the first time the guard runs.
-TOOL_NAMES: set[str] = {
-    "get_journal", "get_page", "get_block", "search", "list_pages", "list_tasks", "list_tags",
-    "list_properties", "find_tagged", "query", "add_block", "update_block", "create_page", "move_block",
-    "tag", "set_properties", "add_flashcard", "add_task", "update_task", "delete_block", "delete_page",
-    "hevy_api",
-}
+# Every tool the connector exposes. hevy_api is known up front; server.mount_all adds the rest (set_tool_source),
+# read the first time the guard runs.
+TOOL_NAMES: set[str] = {"hevy_api"}
 _tool_source = None
 
 
@@ -78,9 +69,9 @@ def _names_a_tool(text: str) -> bool:
         return True
     for name in tuple(TOOL_NAMES):  # a copy: the guard runs in a worker thread while the loop may add names
         n = re.escape(name)
-        if "_" in name:  # add_block, hevy_api: never plain words
+        if "_" in name:  # hevy_api, people_note: never plain words
             pattern = rf"\b{n}\b"
-        else:  # search, query, tag are also words: only as a tool ("the query tool", "call search")
+        else:  # a one-word name is also a word: only as a tool ("the lamp tool", "call lamp")
             pattern = rf"\b{n}\s+tool\b|\b(?:call|run|invoke)\s+(?:the\s+)?{n}\b"
         if re.search(pattern, text, re.IGNORECASE):
             return True

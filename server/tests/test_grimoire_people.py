@@ -72,7 +72,7 @@ def test_creating_and_noting_append_to_the_page():
 def test_people_data_round_trip_on_a_real_graph(tmp_path, monkeypatch):
     monkeypatch.setenv("GRIMOIRE_GRAPH", str(tmp_path / "g"))
     monkeypatch.setenv("GRIM_BIN", GRIM)
-    data = people_data.PeopleData(cli=None, backend=grimoire_people.GrimoirePages(), snap_dir=str(tmp_path / "snap"), refresh=lambda: None)
+    data = people_data.PeopleData(backend=grimoire_people.GrimoirePages(), snap_dir=str(tmp_path / "snap"), refresh=lambda: None)
     data._checked = True
 
     async def go():

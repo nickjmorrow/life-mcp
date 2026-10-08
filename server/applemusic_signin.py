@@ -1,5 +1,5 @@
-"""One-time Apple Music sign-in: serves a MusicKit JS page on 127.0.0.1:8770 (APPLEMUSIC_SIGNIN_PORT;
-8769 is the flashcard page), he clicks Sign in,
+"""One-time Apple Music sign-in: serves a MusicKit JS page on 127.0.0.1:8770 (APPLEMUSIC_SIGNIN_PORT),
+he clicks Sign in,
 Apple's popup asks him to allow "Life", and the Music user token is saved to
 ~/.config/life-mcp/applemusic.json (600). Then it exits. Run again when the sign-in expires
 (about every 6 months; the tools say so).

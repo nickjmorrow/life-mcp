@@ -16,7 +16,7 @@ import usage_log
 
 def test_checks_cover_every_group():
     import server
-    assert set(smoke.CHECKS) | set(smoke.LOCAL_CHECKS) == {"logseq", "private"} | {g.label for g in server.GROUPS}
+    assert set(smoke.CHECKS) | set(smoke.LOCAL_CHECKS) == {"private"} | {g.label for g in server.GROUPS}
     assert not set(smoke.CHECKS) & set(smoke.LOCAL_CHECKS)
 
 def test_every_check_is_read_only():

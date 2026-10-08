@@ -5,7 +5,7 @@ One remote [MCP](https://modelcontextprotocol.io) server that lets every Claude 
 It runs on an old MacBook kept at home as a server. claude.ai reaches it through [Tailscale Funnel](https://tailscale.com/kb/1223/funnel) over HTTPS, with GitHub sign-in locked to one account.
 
 ```
-claude.ai (phone, web) ─┐                               ┌─ Logseq (notes, journal), shared memory (files in git)
+claude.ai (phone, web) ─┐                               ┌─ Grimoire (notes, journal), shared memory (files in git)
 Claude Code ─────────────┼─► Tailscale Funnel ─► server/ ┼─ health.db (Apple Health + Hevy + Eight Sleep)
 other agents ───────────┘   GitHub OAuth, one account   ├─ Messages + Contacts (read-only copies)
                                                         ├─ Hue · Eight Sleep · Reminders · Music + HomePods
@@ -18,7 +18,7 @@ other agents ───────────┘   GitHub OAuth, one account   
 
 | | |
 | --- | --- |
-| [`server/`](server) | The connector: a [FastMCP](https://gofastmcp.com) server with ~180 tools in groups (`memory_*`, `rule_edit`, `ship_it`, `health_*`, `people_*`, `cards_*`, `hue_*`, `home_*`, `tv_*`, `music_*`, `eight_sleep_*`, `reminders_*`, `hevy_api`, `skill_*`, plus the Logseq tools). Each group is its own module, listed in one table and mounted so one failing integration doesn't take down the rest. Dependencies are pinned in `server/pyproject.toml` + `uv.lock`. Hourly importers build a SQLite health database and private copies of Messages/Contacts. |
+| [`server/`](server) | The connector: a [FastMCP](https://gofastmcp.com) server with ~180 tools in groups (`memory_*`, `rule_edit`, `ship_it`, `health_*`, `people_*`, `grimoire_*`, `hue_*`, `home_*`, `tv_*`, `music_*`, `eight_sleep_*`, `reminders_*`, `hevy_api`, `skill_*`). Each group is its own module, listed in one table and mounted so one failing integration doesn't take down the rest. Dependencies are pinned in `server/pyproject.toml` + `uv.lock`. Hourly importers build a SQLite health database and private copies of Messages/Contacts. |
 | [`hue/`](hue) | Philips Hue (CLIP v2): lights, effects, gradients, scenes, automations, rooms and zones. |
 | [`home-app/`](home-app) | Life Home, a tiny signed Mac Catalyst app. HomeKit only talks to entitled apps, so this one serves Apple Home on a loopback-only API the server calls. |
 | [`SYSTEM.md`](SYSTEM.md) | How the code fits together, for agents (and people) working on it. |

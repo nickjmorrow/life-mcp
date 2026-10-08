@@ -16,7 +16,6 @@ EXPECTED = {
     "changes": {"rule_edit", "change_preview", "ship_it", "drop_change"},
     "health": {"health_summary", "health_compare", "health_query"},
     "people": {"people_find", "people_keep_in_touch", "people_note"},
-    "cards": {"cards_status", "cards_next", "cards_rate"},
     "grimoire": {"grimoire_get_page", "grimoire_search", "grimoire_append", "grimoire_edit_block", "grimoire_undo_claude", "grimoire_cards_next"},
     "hue": {"hue_status", "hue_set_light", "hue_list_home"},
     "eight_sleep": {"eight_sleep_get_me"},
@@ -107,21 +106,6 @@ def test_the_main_block_uses_mount_all():
     assert "mount_all()" in src.split('if __name__ == "__main__":')[1]
 
 
-def test_ensure_properties_sees_existing_titles(monkeypatch):
-    # `logseq list property` items carry "block/title", not "title"; existing names must not be re-created.
-    calls = []
-
-    async def fake_cli(*args, json_out=False):
-        calls.append(args)
-        if args[:2] == ("list", "property"):
-            return {"items": [{"block/title": "saved-on"}]}
-        return {"result": [1]}
-
-    monkeypatch.setattr(server, "cli", fake_cli)
-    asyncio.run(server.ensure_properties(["saved-on", "stage"]))
-    assert [a for a in calls if a[:2] == ("upsert", "property")] == [("upsert", "property", "--name=stage")]
-
-
 # --- the recall reminder ---------------------------------------------------------------------------------------------
 
 MEMORY_TOOLS = {"memory_recall", "memory_save", "memory_update"}  # these never get the reminder
@@ -136,10 +120,9 @@ def served(target):
 
 
 def whole_connector():
-    """The Logseq tools and every tool group (but Eight Sleep's proxy, which needs a separately installed npm server),
-    with the reminder switched on as the server's main block does."""
+    """Every tool group (but Eight Sleep's proxy, which needs a separately installed npm server), with the reminder
+    switched on as the server's main block does."""
     target = FastMCP("t")
-    target.mount(server.mcp)  # the Logseq tools are registered on server.mcp itself
     server.mount_all(target, tuple(g for g in server.GROUPS if g.label != "eight_sleep"))
     target.add_middleware(server.RecallReminder())
     return target
@@ -148,7 +131,7 @@ def whole_connector():
 def test_every_tool_but_the_memory_tools_ends_with_the_recall_reminder():
     tools = served(whole_connector())
     # one tool from each way a tool gets its description: a docstring, a given description, a skill built in, a proposal
-    assert MEMORY_TOOLS | {"get_page", "hevy_api", "cards_next", "rule_edit", "ship_it"} <= set(tools)
+    assert MEMORY_TOOLS | {"grimoire_get_page", "hevy_api", "grimoire_cards_next", "rule_edit", "ship_it"} <= set(tools)
     for name, description in tools.items():
         if name in MEMORY_TOOLS:
             assert server.RECALL_REMINDER not in description, name
