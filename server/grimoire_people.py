@@ -43,7 +43,7 @@ def outline(nodes: list[dict], depth: int = 0) -> list[str]:
 
 
 class GrimoirePages:
-    """The same five calls as people_data.LogseqPages, over the hub graph's `grim`."""
+    """The five calls people_data.PeopleData makes of its backend, over the hub graph's `grim`."""
     name = "Grimoire"
 
     def __init__(self, run=None):
@@ -59,7 +59,7 @@ class GrimoirePages:
             aliases = [a.strip() for a in re.split(r",", props.get("alias", "")) if a.strip()]
             out[r["id"]] = {"id": r["id"], "title": r["title"], "props": {k: v for k, v in props.items() if k not in ("tags", "alias")},
                             "aliases": aliases}
-        # Logseq listed an alias's target only; a page that is another page's alias is the same person
+        # a page that is another page's alias is the same person, so only the alias's target is listed
         alias_names = {a.lower() for p in out.values() for a in p["aliases"]}
         return [p for p in out.values() if p["title"].lower() not in alias_names]
 

@@ -12,12 +12,10 @@ from pathlib import Path
 
 from fastmcp import Client
 
-# One per tool group in server.GROUPS (tests check none is missing), plus the Logseq tools themselves.
+# One per tool group in server.GROUPS (tests check none is missing).
 CHECKS = {
-    "logseq": ("list_pages", {}),
     "health": ("health_summary", {}),
     "people": ("people_keep_in_touch", {}),
-    "cards": ("cards_status", {}),
     "grimoire": ("grimoire_favorites", {}),
     "hue": ("hue_status", {}),
     "eight_sleep": ("eight_sleep_connection_status", {}),
@@ -131,7 +129,7 @@ def load_server():
     is the one the harness reads."""
     global _server
     if _server is None:
-        import server  # imported late so the tests run without the Logseq app
+        import server
         server.TOOLS_FILE = Path(tempfile.mkdtemp(prefix="smoke-")) / "tools.json"
         server.mount_all()
         _server = server

@@ -1,4 +1,4 @@
-"""A tiny fake chat.db, AddressBook database and Logseq CLI, with the real schemas' columns."""
+"""A tiny fake chat.db and AddressBook database with the real schemas' columns, and a fake person-page backend."""
 import datetime as dt
 import os
 import sqlite3
@@ -65,39 +65,34 @@ def contacts(path, people):
     db.commit()
 
 
-class FakeLogseq:
-    """pages: {title: {"id": int, "props": {name: value}, "text": str}}"""
-    def __init__(self, pages=None):
-        # a page with "deleted": True or "alias_of": title is left out of person-page queries, like the real ones
-        self.pages = pages or {}
+class FakePages:
+    """A person-page backend for people_data.PeopleData (the calls grimoire_people.GrimoirePages makes), in memory.
+    by_title: {title: {"id": int, "props": {name: value}, "text": str}}"""
+    def __init__(self, by_title=None):
+        # a page with "person": False or "alias_of": title isn't listed as a person, like the real backend
+        self.by_title = by_title or {}
         self.calls = []
         self.next_id = 900
 
-    @staticmethod
-    def _listed(p):
-        return p.get("person", True) and not p.get("deleted") and not p.get("alias_of")
+    async def pages(self):
+        return [{"id": p["id"], "title": t, "props": dict(p.get("props", {})), "aliases": list(p.get("aliases", []))}
+                for t, p in self.by_title.items() if p.get("person", True) and not p.get("alias_of")]
 
-    async def __call__(self, *args, json_out=False):
-        self.calls.append(args)
-        opts = dict(a[2:].split("=", 1) for a in args if a.startswith("--") and "=" in a)
-        if args[0] == "query":
-            q = opts["query"]
-            if ":block/alias" in q and "?alias" in q:
-                return {"result": [[p["id"], a] for p in self.pages.values() for a in p.get("aliases", [])]}
-            if "?name ?value" in q:
-                return {"result": [[p["id"], k, v] for p in self.pages.values() if self._listed(p)
-                                   for k, v in p.get("props", {}).items()]}
-            return {"result": [[p["id"], t] for t, p in self.pages.items() if self._listed(p)]}
-        if args[0] == "show":
-            if opts["page"] not in self.pages:
-                from fastmcp.exceptions import ToolError
-                raise ToolError(f"page not found: {opts['page']}")
-            return self.pages[opts["page"]].get("text", opts["page"])
-        if args[:2] == ("upsert", "page"):
-            self.next_id += 1
-            self.pages.setdefault(opts["page"], {"id": self.next_id, "props": {}, "text": opts["page"], "blocks": []})
-            return {"result": [self.pages[opts["page"]]["id"]]}
-        if args[:2] == ("upsert", "block"):
-            self.pages[opts["target-page"]].setdefault("blocks", []).append(opts["content"])
-            return {"result": [1]}
-        raise AssertionError(args)
+    async def text(self, title):
+        self.calls.append(("text", title))
+        if title not in self.by_title:
+            from fastmcp.exceptions import ToolError
+            raise ToolError(f"page not found: {title}")
+        return self.by_title[title].get("text", title)
+
+    async def exists(self, title):
+        return title in self.by_title
+
+    async def create_person(self, title):
+        self.calls.append(("create_person", title))
+        self.next_id += 1
+        self.by_title.setdefault(title, {"id": self.next_id, "props": {}, "text": title, "blocks": []})
+
+    async def add_note(self, title, text):
+        self.calls.append(("add_note", title, text))
+        self.by_title[title].setdefault("blocks", []).append(text)

@@ -1,6 +1,6 @@
 """The memory tools over the file store. Writes go to memory/ in a temp harness repo on dev (conftest points WORKING_COPY
 and MEMORY_DIR at it); reads come from a temp clean copy (private.DIR), which merge() fills from the writes the way a
-merge into main would. Every name and fact here is made up, and the Logseq CLI is never involved."""
+merge into main would. Every name and fact here is made up."""
 import asyncio
 import fcntl
 import inspect
@@ -21,7 +21,6 @@ import context
 import memory_mcp
 import memory_store
 import private
-import server
 import skills_mcp
 import usage_log
 
@@ -68,19 +67,6 @@ def merge(root):
 def client(root):
     """The memory server. call() opens a session on it for each call."""
     return memory_mcp.build()
-
-
-@pytest.fixture
-def fake_cli(monkeypatch):
-    """A server.cli that records every call and refuses it: the memory tools must never reach for Logseq."""
-    calls = []
-
-    async def cli(*args, json_out=False):
-        calls.append(args)
-        raise AssertionError(f"memory called the Logseq CLI: {args}")
-
-    monkeypatch.setattr(server, "cli", cli)
-    return calls
 
 
 def call(client, tool, **args):
@@ -135,10 +121,9 @@ def test_instructions_send_rules_to_rule_edit():
     text = memory_mcp.INSTRUCTIONS
     assert "memory_recall" in text and "memory_save" in text and "pick a topic" in text
     assert "rule_edit" in text and "not memory" in text
-    assert "Claude memories" not in text  # that was the Logseq page
 
 
-def test_no_logseq_cli_called(client, root, fake_cli):
+def test_memory_needs_nothing_from_the_server(client, root):
     assert list(inspect.signature(memory_mcp.build).parameters) == []  # nothing from server.py is passed in
     save(client, "swims before breakfast", "health")
     call(client, "memory_recall")
@@ -146,7 +131,6 @@ def test_no_logseq_cli_called(client, root, fake_cli):
     call(client, "memory_recall", topic="breakfast")
     call(client, "memory_update", entry_id="h1", text="swims before work")
     call(client, "memory_update", entry_id="h1", remove=True)
-    assert fake_cli == []
 
 
 def test_the_tests_never_touch_the_real_memory_folder(tmp_path):
@@ -558,7 +542,7 @@ def test_update_text_and_remove_together_refused(client, root):
     assert "swims before breakfast" in text_of(root, "health")
 
 
-@pytest.mark.parametrize("text, message", [("call add_block every hour", "connector tool"),
+@pytest.mark.parametrize("text, message", [("call hevy_api every hour", "connector tool"),
                                            ("always ask before booking", "rule_edit"),
                                            ("   ", "empty")])
 def test_update_text_goes_through_the_guard(client, root, text, message):

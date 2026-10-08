@@ -90,6 +90,32 @@ def test_card_tools(grim):
     assert grim.calls[1] == ("cards", "review", "c1", "good")
 
 
+def test_the_flashcard_review_skill_rides_in_cards_next(tmp_path):
+    # The description is built at import from the private folder's skills, so import it fresh with a skill in place.
+    import os
+    import subprocess
+    import sys
+    skill = tmp_path / "skills" / "flashcard-review"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: flashcard-review\ndescription: d\n---\n\n# Flashcard review\n\nSay Yep.\n")
+    code = ("import asyncio, grimoire_mcp; tools = asyncio.run(grimoire_mcp.mcp.list_tools());"
+            " print(next(t.description for t in tools if t.name == 'cards_next'))")
+    out = subprocess.run([sys.executable, "-c", code], cwd=Path(grimoire_mcp.__file__).parent, capture_output=True,
+                         text=True, check=True, env={**os.environ, "LIFE_MCP_PRIVATE": str(tmp_path)}).stdout.strip()
+    assert out.startswith(grimoire_mcp.NEXT_DOC) and out.endswith("Say Yep.")
+    assert "Follow his flashcard-review skill" in out and "no need to skill_load" in out
+
+
+def test_cards_next_logs_the_skill_once_per_chat(grim, monkeypatch):
+    import skill_tools
+    import usage_log
+    monkeypatch.setattr(skill_tools, "_logged", {})
+    call("cards_next")
+    call("cards_next")
+    rows = [json.loads(line) for line in usage_log.PATH.read_text().splitlines()]
+    assert [(r["tool"], r["skill"]) for r in rows] == [("skill_load", "flashcard-review")]
+
+
 def test_the_server_registers_the_expected_tools():
     names = {t.name for t in asyncio.run(grimoire_mcp.mcp.list_tools())}
     assert {"get_page", "append", "edit_block", "delete_block", "undo_claude", "cards_next", "cards_review", "query"} <= names

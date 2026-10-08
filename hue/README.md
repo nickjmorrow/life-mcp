@@ -38,7 +38,7 @@ name can be stale. `rename` updates both.
 Runs inside the life-mcp server (launchd `com.nicholai.life-mcp`, log
 `~/Library/Logs/life-mcp.log`). After changing code here, restart it:
 `launchctl kickstart -k gui/$(id -u)/com.nicholai.life-mcp`. If these tools fail
-to import, the log says "Hue tools not loaded" and Logseq keeps working.
+to import, the log says "Hue tools not loaded" and the rest of the connector keeps working.
 
 ## Secrets (`~/.zshrc.local`)
 
