@@ -98,7 +98,9 @@ def build() -> FastMCP:
         chats until he does. Use it when he states a lasting rule ("from now on...") or agrees that a correction should
         become one; facts about him go to memory_save, not here. Give the file's path, the new text and why. To replace
         text, pass old (it must appear exactly once in the file); to insert after a line, pass after (the whole line);
-        with neither, new is added at the end of the file. Changes he is looking at with you right now go through
+        with neither, new is added at the end of the file. To start a new skill, give path skills/<name>/SKILL.md (lowercase
+        words joined by -) and only new: the whole file, with plain frontmatter (name: <name>, description:, trigger: up
+        to 140 characters) and a body of at most 80 lines; skill powers (tools, hooks, shell) are refused. Changes he is looking at with you right now go through
         change_preview and ship_it instead."""
         return await _call("edit", {"path": path, "new": new, "why": why, "surface": surface, "old": old, "after": after,
                                     "quote": quote, "untrusted": untrusted_content_seen})
