@@ -10,6 +10,7 @@ of indent per level, `[[Page]]` links, `#tags`, `TODO ` tasks.
 import asyncio
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Annotated, Literal
@@ -74,6 +75,15 @@ async def refuse_journal_block(block_id: str) -> None:
     if rows and rows[0].get("kind") == "journal":
         raise ToolError("That block is on a journal page. Nicholas's journal entries stay as he wrote them: add a new block "
                         "with grimoire_append instead.")
+
+
+async def refuse_journal_page(title: str) -> None:
+    """Deleting a journal page would delete all his raw thoughts on it."""
+    safe = title.replace("'", "").lower()
+    out = await run("query", f"SELECT kind FROM pages WHERE title_lower = '{safe}'")
+    looks_like_journal = safe in ("today", "yesterday") or re.fullmatch(r"\d{4}-\d{2}-\d{2}", safe)
+    if looks_like_journal or any(r.get("kind") == "journal" for r in json.loads(out)):
+        raise ToolError("That's a journal page. Nicholas's journal entries stay as he wrote them, so Claude doesn't delete them.")
 
 
 # ── reads ────────────────────────────────────────────────────────────────
@@ -213,6 +223,14 @@ async def delete_block(block_id: str) -> str:
     """Delete a block and its children (undoable with grimoire_undo_claude). Refused on journal pages."""
     await refuse_journal_block(block_id)
     return await run("delete", block_id)
+
+
+@mcp.tool(annotations=DESTROY)
+async def delete_page(title: str) -> str:
+    """Delete a page and all its blocks (undoable with grimoire_undo_claude). A page other pages link to is emptied instead,
+    and the links stay. Refused on journal pages. Ask Nicholas first."""
+    await refuse_journal_page(title)
+    return await run("delete-page", text_arg(title))
 
 
 @mcp.tool(annotations=DESTROY)

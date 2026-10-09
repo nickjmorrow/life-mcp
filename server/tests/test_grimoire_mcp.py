@@ -116,9 +116,19 @@ def test_cards_next_logs_the_skill_once_per_chat(grim, monkeypatch):
     assert [(r["tool"], r["skill"]) for r in rows] == [("skill_load", "flashcard-review")]
 
 
+def test_delete_page_is_refused_on_journals_and_goes_through_otherwise(grim):
+    grim.rows = [{"kind": "journal"}]
+    assert "journal" in refused("delete_page", title="Oct 5th, 2026")
+    assert "journal" in refused("delete_page", title="today")
+    assert all(c[0] == "query" for c in grim.calls)               # nothing was deleted
+    grim.rows = [{"kind": "page"}]
+    call("delete_page", title="Old notes")
+    assert ("delete-page", "Old notes") in grim.calls
+
+
 def test_the_server_registers_the_expected_tools():
     names = {t.name for t in asyncio.run(grimoire_mcp.mcp.list_tools())}
-    assert {"get_page", "append", "edit_block", "delete_block", "undo_claude", "cards_next", "cards_review", "query"} <= names
+    assert {"get_page", "append", "edit_block", "delete_block", "delete_page", "undo_claude", "cards_next", "cards_review", "query"} <= names
 
 
 GRIM = shutil.which("grim") or str(Path.home() / ".local/bin/grim")
@@ -138,3 +148,6 @@ def test_round_trip_with_the_real_cli(tmp_path, monkeypatch):
     assert "edited" not in call("get_page", title="Recipes")
     jid = json.loads(call("append", target="today", markdown="- my thought"))["blockIds"][0]
     assert "journal" in refused("edit_block", block_id=jid, text="changed")
+    call("append", target="Scratch", markdown="- x")
+    call("delete_page", title="Scratch")
+    assert "not found" in refused("get_page", title="Scratch")
