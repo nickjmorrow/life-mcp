@@ -22,6 +22,7 @@ CHECKS = {
     "eight_sleep_extras": ("eight_sleep_pod_status", {}),
     "reminders": ("reminders_list_lists", {}),
     "hevy": ("hevy_api", {"method": "GET", "path": "/v1/workouts/count"}),
+    "forge": ("forge_list_routines", {}),
     "music": ("music_list_speakers", {}),
     "music_library": ("music_status", {}),
     "tv": ("tv_status", {}),

@@ -143,6 +143,9 @@ GROUPS: tuple[Group, ...] = (
     Group("hevy", "hevy_mcp", "hevy",
           instructions=" hevy_api calls Hevy's REST API (his workouts and routines) with the key added on"
                        " the server: never ask for or show the key."),
+    Group("forge", "forge_proxy", "forge",
+          instructions=" The forge_* tools are his workout tracker (exercises, routines, logged workouts, recovery, stats); weights are"
+                       " kg and every change you make is logged as Claude and undone with forge_undo_claude."),
     Group("music", "music_mcp",
           instructions=" The music_* tools play his Apple Music library on AirPlay speakers (HomePods, the"
                        " Apple TV) and control whatever they're playing."),

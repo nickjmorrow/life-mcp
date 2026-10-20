@@ -22,6 +22,7 @@ EXPECTED = {
     "eight_sleep_extras": {"eight_sleep_list_alarms", "eight_sleep_pod_status", "eight_sleep_set_bedtime"},
     "reminders": {"reminders_add", "reminders_list_lists"},
     "hevy": {"hevy_api"},
+    "forge": {"forge_list_exercises", "forge_put_routine", "forge_undo_claude"},
     "music": {"music_play", "music_now_playing", "music_set_volume"},
     "music_library": {"music_recent", "music_taste", "music_status"},
     "tv": {"tv_status", "tv_open_app", "tv_remote"},
@@ -47,9 +48,9 @@ def test_every_group_has_expectations():
     assert {g.label for g in server.GROUPS} == set(EXPECTED)
 
 
-@pytest.mark.parametrize("g", [g for g in server.GROUPS if g.label != "eight_sleep"], ids=lambda g: g.label)
+@pytest.mark.parametrize("g", [g for g in server.GROUPS if g.label not in ("eight_sleep", "forge")], ids=lambda g: g.label)
 def test_group_mounts_its_tools(g):
-    # (eight_sleep proxies a separately installed npm server, so it's skipped when that's missing.)
+    # (eight_sleep and forge proxy separately installed servers; their tests are skipped when those are missing.)
     if not ((g.path or HERE) / f"{g.module}.py").exists():
         pytest.skip(f"{g.module}.py isn't in this checkout")
     target = FastMCP("t")
