@@ -23,7 +23,8 @@ for needed in (SCRIPT, FORGE_BIN):
 # The script is standard library only, so the connector's own interpreter runs it (launchd's PATH has no python).
 mcp = create_proxy(
     {"mcpServers": {"forge": {"command": sys.executable, "args": [str(SCRIPT)],
-                              "env": {"FORGE_DB": DB, "FORGE_BIN": str(FORGE_BIN), "PATH": os.environ.get("PATH", "/usr/bin:/bin")}}}},
+                              "env": {"FORGE_DB": DB, "FORGE_BIN": str(FORGE_BIN), "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                                      "FORGE_AUTOSYNC": "0"}}}},   # this copy is the sync hub itself
     # The script speaks the plain initialize-handshake protocol, like the Eight Sleep server.
     mode="legacy",
     name="Forge",
