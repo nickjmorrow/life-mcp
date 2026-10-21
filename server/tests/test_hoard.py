@@ -11,7 +11,7 @@ import hoard_mcp
 LIBRARY = {
     "titles": [
         {"pageId": "w-1", "name": "Nope", "year": 2022, "type": "movie", "status": "want", "tags": ["Rainy Day"],
-         "stored": True, "summary": "long text", "notesText": ""},
+         "summary": "long text", "notesText": ""},
         {"pageId": "abc", "name": "Get Out", "year": 2017, "type": "movie", "status": "done", "tags": ["Rainy Day"],
          "rating": 5, "finished": "2026-01-02", "notesText": "loved it"},
         {"pageId": "def", "name": "Severance", "type": "show", "status": "doing", "tags": [], "progress": "S2E4"},
@@ -50,8 +50,7 @@ def call(tool, **args):
 def test_library_filters_and_trims(calls):
     out = call("library", status="want")
     assert out["count"] == 1 and out["titles"] == [
-        {"pageId": "w-1", "name": "Nope", "year": 2022, "type": "movie", "status": "want", "tags": ["Rainy Day"],
-         "stored": True}]
+        {"pageId": "w-1", "name": "Nope", "year": 2022, "type": "movie", "status": "want", "tags": ["Rainy Day"]}]
     assert [t["name"] for t in call("library", tag="rainy day")["titles"]] == ["Nope", "Get Out"]
     assert [t["name"] for t in call("library", type="show")["titles"]] == ["Severance"]
     assert [t["name"] for t in call("library", name="get")["titles"]] == ["Get Out"]
@@ -80,9 +79,9 @@ def test_set_sends_only_what_changes(calls):
     assert calls[1][2] == {"tags": ["A", "B"]}
 
 
-def test_set_tags_go_before_a_status_that_moves_the_title(calls):
-    call("set", page_id="w-1", status="doing", tags=["A"])
-    assert [c[2] for c in calls] == [{"tags": ["A"]}, {"fields": {"status": "doing"}}]
+def test_set_sends_fields_and_tags_in_one_patch(calls):
+    call("set", page_id="abc", status="doing", tags=["A"])
+    assert [c[:3] for c in calls] == [("PATCH", "/api/titles/abc", {"fields": {"status": "doing"}, "tags": ["A"]})]
 
 
 def test_set_needs_a_change_and_a_plain_id(calls):
@@ -93,6 +92,41 @@ def test_set_needs_a_change_and_a_plain_id(calls):
     with pytest.raises(ToolError):
         call("set", page_id="w-1", rating=6)
     assert calls == []
+
+
+def test_note_adds_a_note_or_edits_one(calls):
+    calls.answers[("POST", "/api/titles/abc/notes")] = {"id": "n1", "text": "Great second half."}
+    out = call("note", page_id="abc", text="Great second half.")
+    assert calls[0][:3] == ("POST", "/api/titles/abc/notes", {"text": "Great second half."})
+    assert out == {"id": "n1", "text": "Great second half."}
+
+    calls.answers[("PUT", "/api/notes/n1")] = {"ok": True}
+    out = call("note", page_id="abc", text="Great second half, weak ending.", note_id="n1")
+    assert calls[1][:3] == ("PUT", "/api/notes/n1", {"text": "Great second half, weak ending."})
+    assert out == {"id": "n1", "text": "Great second half, weak ending."}
+
+
+def test_note_needs_text_and_plain_ids(calls):
+    with pytest.raises(ToolError, match="text"):
+        call("note", page_id="abc", text="  ")
+    with pytest.raises(ToolError, match="page_id must be"):
+        call("note", page_id="../x", text="hi")
+    with pytest.raises(ToolError, match="note_id must be"):
+        call("note", page_id="abc", text="hi", note_id="../x")
+    assert calls == []
+
+
+def test_get_returns_one_title_with_its_notes_and_details(calls):
+    calls.answers[("GET", "/api/titles/abc")] = {
+        **LIBRARY["titles"][1], "propBlockId": "", "summary": "A photographer meets the family.", "director": ["Jordan Peele"],
+        "cast": ["Daniel Kaluuya"], "notes": [{"id": "n1", "text": "loved it"}], "notesText": "loved it", "createdAt": 5}
+    out = call("get", page_id="abc")
+    assert calls[0][:2] == ("GET", "/api/titles/abc")
+    assert out == {"pageId": "abc", "name": "Get Out", "year": 2017, "type": "movie", "status": "done", "tags": ["Rainy Day"],
+                   "rating": 5, "finished": "2026-01-02", "summary": "A photographer meets the family.",
+                   "director": ["Jordan Peele"], "cast": ["Daniel Kaluuya"], "notes": [{"id": "n1", "text": "loved it"}]}
+    with pytest.raises(ToolError, match="page_id must be"):
+        call("get", page_id="../x")
 
 
 def test_suggest_from_one_source(calls):

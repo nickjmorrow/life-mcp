@@ -1,7 +1,7 @@
 """hoard_*: the Hoard media app's API (movies, shows and games), on the same Mac.
 
-Hoard keeps titles nobody has started (the want list) in its own store, with ids starting `w-`; a title gets a Grimoire
-page once it's started or finished. These tools go through Hoard's API so a want-list title never becomes a page.
+Hoard keeps everything about a title (status, rating, tags, notes, looked-up details) in its own store; Grimoire holds
+none of it. These tools go through Hoard's API, so they never touch Grimoire pages.
 HOARD_URL sets where it listens (default http://127.0.0.1:8781). server.py mounts this server (namespace "hoard").
 """
 import json
@@ -19,7 +19,9 @@ PAGE_ID = re.compile(r"^[A-Za-z0-9_\-]+$")  # one path segment: no slashes, quer
 TIMEOUT_S = 30
 SUGGEST_TIMEOUT_S = 300  # Hoard runs Claude for suggestions and gives it up to 4 minutes
 # What a library row keeps: enough to pick and change a title, without the long fields (summary, cast, notes).
-ROW_KEYS = ("pageId", "name", "year", "type", "status", "tags", "rating", "rec", "finished", "progress", "stored")
+ROW_KEYS = ("pageId", "name", "year", "type", "status", "tags", "rating", "rec", "finished", "progress")
+# What hoard_get adds for one title: the details Hoard looked up (the notes come separately).
+DETAIL_KEYS = ("imdb", "runtime", "genre", "rt", "summary", "director", "writer", "cast")
 
 Status = Literal["want", "doing", "done", "dropped"]
 MediaType = Literal["movie", "show", "game"]
@@ -50,7 +52,7 @@ async def request(method: str, path: str, body: dict | None = None, timeout: flo
 def _page_id(page_id: str) -> str:
     page_id = page_id.strip()
     if not PAGE_ID.match(page_id):
-        raise ToolError("page_id must be a title's pageId from hoard_library (like w-1a2b… or a Grimoire page id).")
+        raise ToolError("page_id must be a title's pageId from hoard_library.")
     return page_id
 
 
@@ -69,10 +71,10 @@ async def library(
     tag: Annotated[str | None, Field(description="Only titles with this tag (a queue), e.g. Rainy Day")] = None,
     name: Annotated[str | None, Field(description="Only titles whose name contains this text")] = None,
 ) -> str:
-    """List his movies, shows and games: the want list (stored: true, pageId w-…) and everything he's started or
-    watched (Grimoire pages). Filters combine; text matches ignore case. Returns {titles: [...], tags: [...]}, each
-    title with pageId, name, year, type, status, tags, rating, rec, finished, progress, stored. Use it to find a
-    title's pageId and to check what he already has before suggesting or adding anything."""
+    """List his movies, shows and games: the want list and everything he's started or watched. Filters combine; text
+    matches ignore case. Returns {titles: [...], tags: [...]}, each title with pageId, name, year, type, status, tags,
+    rating, rec, finished, progress. Use it to find a title's pageId and to check what he already has before
+    suggesting or adding anything; hoard_get shows one title's notes and details."""
     data = await request("GET", "/api/library")
     titles = data["titles"]
     if status:
@@ -94,8 +96,8 @@ async def add(
     year: Annotated[int | None, Field(description="Release year, when known; tells same-name works apart")] = None,
     tags: Annotated[list[str] | None, Field(description="Tags (queues) by full name, e.g. [\"Rainy Day\"]")] = None,
     rec: Annotated[str | None, Field(description="Who recommended it, e.g. a friend's name; Claude if you did")] = None,
-    status: Annotated[Status, Field(description="want (default) puts it on the want list in Hoard's store; doing, "
-                                                "done or dropped gives it a Grimoire page")] = "want",
+    status: Annotated[Status, Field(description="want (default) puts it on the want list; doing, done or dropped "
+                                                "if he's already started, watched or dropped it")] = "want",
 ) -> str:
     """Add a movie, show or game to Hoard. If he already has it (same IMDb id or name and year), nothing is created
     and the existing title comes back with existed: true. Hoard fills in IMDb, runtime, genre and the rest within a
@@ -114,8 +116,7 @@ async def add(
                                   "openWorldHint": False})
 async def set_title(
     page_id: Annotated[str, Field(description="The title's pageId from hoard_library")],
-    status: Annotated[Status | None, Field(description="New status; doing, done or dropped moves a want-list title "
-                                                       "to a Grimoire page (its pageId changes)")] = None,
+    status: Annotated[Status | None, Field(description="New status; done also sets today's finished date")] = None,
     rating: Annotated[int | None, Field(ge=1, le=5, description="His rating, a whole number 1 to 5")] = None,
     tags: Annotated[list[str] | None, Field(description="The full new tag list (replaces the old one: include the "
                                                         "tags it already has)")] = None,
@@ -125,8 +126,7 @@ async def set_title(
     progress: Annotated[str | None, Field(description="Where he is, free text like S2E4")] = None,
 ) -> str:
     """Change a title's status, rating, tags, recommender, finished date or progress. Only what you pass changes.
-    Returns the updated title; when a want-list title is started or finished it comes back with its new Grimoire
-    pageId."""
+    Returns the updated title."""
     fields: dict[str, str] = {}
     for key, value in (("status", status), ("rec", rec), ("finished", finished), ("progress", progress)):
         if value is not None:
@@ -135,12 +135,45 @@ async def set_title(
         fields["rating"] = str(rating)
     if not fields and tags is None:
         raise ToolError("Nothing to change: pass status, rating, tags, rec, finished or progress.")
-    path = f"/api/titles/{_page_id(page_id)}"
-    # Hoard applies fields before tags, and a status that moves a title to Grimoire changes its id, so tags go first.
-    title = await request("PATCH", path, {"tags": tags}) if tags is not None else None
+    body: dict[str, Any] = {}
     if fields:
-        title = await request("PATCH", path, {"fields": fields})
+        body["fields"] = fields
+    if tags is not None:
+        body["tags"] = tags
+    title = await request("PATCH", f"/api/titles/{_page_id(page_id)}", body)
     return _dump(_row(title))
+
+
+@mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
+async def get(
+    page_id: Annotated[str, Field(description="The title's pageId from hoard_library")],
+) -> str:
+    """One title in full: everything hoard_library shows plus the details Hoard looked up (imdb, runtime, genre, rt,
+    summary, director, writer, cast) and his notes and reviews, each with an id (for hoard_note to edit)."""
+    title = await request("GET", f"/api/titles/{_page_id(page_id)}")
+    detail = {k: title[k] for k in DETAIL_KEYS if title.get(k) not in (None, [], "")}
+    return _dump({**_row(title), **detail, "notes": [{"id": n["id"], "text": n["text"]} for n in title.get("notes", [])]})
+
+
+@mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False})
+async def note(
+    page_id: Annotated[str, Field(description="The title's pageId from hoard_library")],
+    text: Annotated[str, Field(description="The note or review, in his words")],
+    note_id: Annotated[str | None, Field(description="To replace an existing note, its id from hoard_get; leave out "
+                                                     "to add a new note")] = None,
+) -> str:
+    """Add a note or review to a title, or with note_id replace that note's text. Write what he says in his words;
+    never summarize or improve it. Returns {id, text}."""
+    if not text.strip():
+        raise ToolError("text must not be empty.")
+    title_id = _page_id(page_id)
+    if note_id is None:
+        return _dump(await request("POST", f"/api/titles/{title_id}/notes", {"text": text}))
+    note_id = note_id.strip()
+    if not PAGE_ID.match(note_id):
+        raise ToolError("note_id must be a note's id from hoard_get.")
+    await request("PUT", f"/api/notes/{note_id}", {"text": text})
+    return _dump({"id": note_id, "text": text})
 
 
 @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
