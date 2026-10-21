@@ -1,5 +1,5 @@
 """The Life connector: every tool group in GROUPS (shared memory, changes, skills, health, people, Grimoire, Hue,
-Eight Sleep, Reminders, Hevy, Music, the Apple TV and Apple Home), mounted by mount_all at the bottom.
+Eight Sleep, Reminders, Hevy, Hoard, Music, the Apple TV and Apple Home), mounted by mount_all at the bottom.
 
 claude.ai -> Tailscale Funnel (https://$PUBLIC_URL) -> this server on 127.0.0.1:8765.
 
@@ -146,6 +146,9 @@ GROUPS: tuple[Group, ...] = (
     Group("forge", "forge_proxy", "forge",
           instructions=" The forge_* tools are his workout tracker (exercises, routines, logged workouts, recovery, stats); weights are"
                        " kg and every change you make is logged as Claude and undone with forge_undo_claude."),
+    Group("hoard", "hoard_mcp", "hoard",
+          instructions=" The hoard_* tools are his movies, shows and games app: the want list lives in its own store"
+                       " (pageIds w-…) and a title gets a Grimoire page once he starts or finishes it."),
     Group("music", "music_mcp",
           instructions=" The music_* tools play his Apple Music library on AirPlay speakers (HomePods, the"
                        " Apple TV) and control whatever they're playing."),

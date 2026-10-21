@@ -9,7 +9,7 @@ claude.ai (phone, web) ─┐                               ┌─ Grimoire (not
 Claude Code ─────────────┼─► Tailscale Funnel ─► server/ ┼─ health.db (Apple Health + Hevy + Eight Sleep)
 other agents ───────────┘   GitHub OAuth, one account   ├─ Messages + Contacts (read-only copies)
                                                         ├─ Hue · Eight Sleep · Reminders · Music + HomePods
-                                                        │  Apple TV · Apple Home · Hevy
+                                                        │  Apple TV · Apple Home · Hevy · Hoard
                                                         ├─ skills (served from a private folder)
                                                         └─ changes: rule edits and ship it (merged by him elsewhere)
 ```
@@ -18,7 +18,7 @@ other agents ───────────┘   GitHub OAuth, one account   
 
 | | |
 | --- | --- |
-| [`server/`](server) | The connector: a [FastMCP](https://gofastmcp.com) server with ~180 tools in groups (`memory_*`, `rule_edit`, `ship_it`, `health_*`, `people_*`, `grimoire_*`, `hue_*`, `home_*`, `tv_*`, `music_*`, `eight_sleep_*`, `reminders_*`, `hevy_api`, `forge_*`, `skill_*`). Each group is its own module, listed in one table and mounted so one failing integration doesn't take down the rest. Dependencies are pinned in `server/pyproject.toml` + `uv.lock`. Hourly importers build a SQLite health database and private copies of Messages/Contacts. |
+| [`server/`](server) | The connector: a [FastMCP](https://gofastmcp.com) server with ~180 tools in groups (`memory_*`, `rule_edit`, `ship_it`, `health_*`, `people_*`, `grimoire_*`, `hue_*`, `home_*`, `tv_*`, `music_*`, `eight_sleep_*`, `reminders_*`, `hevy_api`, `forge_*`, `hoard_*`, `skill_*`). Each group is its own module, listed in one table and mounted so one failing integration doesn't take down the rest. Dependencies are pinned in `server/pyproject.toml` + `uv.lock`. Hourly importers build a SQLite health database and private copies of Messages/Contacts. |
 | [`hue/`](hue) | Philips Hue (CLIP v2): lights, effects, gradients, scenes, automations, rooms and zones. |
 | [`home-app/`](home-app) | Life Home, a tiny signed Mac Catalyst app. HomeKit only talks to entitled apps, so this one serves Apple Home on a loopback-only API the server calls. |
 | [`SYSTEM.md`](SYSTEM.md) | How the code fits together, for agents (and people) working on it. |
