@@ -1,4 +1,5 @@
-"""rule_edit, change_preview, ship_it and drop_change: change how Claude behaves for this user, through his agent harness.
+"""rule_edit, change_preview, ship_it, merge_preview, merge_changes and drop_change: change how Claude behaves for this
+user, through his agent harness.
 
 How Claude behaves (his rules, skills and the harness's code) lives in his private harness repo, and only reaches the
 main branch (what every Claude loads) with his approval. These tools don't touch the repo themselves: each runs the
@@ -9,6 +10,11 @@ sub-command and the arguments as JSON on stdin, and returns the `text` the comma
     change_preview   sub-command `preview`: show the diff of an edit and its diff_hash (changes nothing)
     ship_it          sub-command `ship`: open a one-change pull request from main and merge it, only for the exact
                      change just previewed, and only after he said "ship it" and allowed the tool in the app's prompt
+    merge_preview    sub-command `digest`: show the open changes (the one pull request dev → main): counts by kind, each
+                     change with his words, its warnings, its checks and its head commit (changes nothing)
+    merge_changes    sub-command `merge`: merge that pull request, only while it is still the number, head and counts
+                     just shown and its checks are green, and only after he said "merge my changes" and allowed the
+                     tool in the app's prompt
     drop_change      sub-command `drop`: take a change off dev and record why (a `Declined:` commit)
 
 The command answers with exit 0 and {"text": "..."}, or exit 2 and {"error": "..."} for a refusal (a ToolError with that
@@ -32,6 +38,7 @@ import private
 
 TIMEOUT_S = 30  # a local command answers at once; a stuck one must not hold a chat
 SHIP_TIMEOUT_S = 660  # ship waits for the pull request's checks (up to 10 minutes) before it can merge
+MERGE_TIMEOUT_S = 180  # merge only runs with green checks, so it waits for GitHub's merge alone (up to 2 minutes)
 
 Surface = Literal["phone", "laptop", "hob", "job"]
 
@@ -126,6 +133,25 @@ def build() -> FastMCP:
         doesn't apply to main. His app asks him to allow this call and shows the change first."""
         return await _call("ship", {"path": path, "new": new, "title": title, "diff_hash": diff_hash, "old": old,
                                     "after": after}, SHIP_TIMEOUT_S)
+
+    @mcp.tool(annotations={"readOnlyHint": True})
+    async def merge_preview() -> str:
+        """Show the open changes: the one pull request from dev to main that holds everything Claude changed since he last
+        merged (counts by kind, each change with his words, warnings about changes from chats that read outside text,
+        its checks and its head commit). Use it when he asks to merge his changes, before merge_changes."""
+        return await _call("digest", {})
+
+    @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True})
+    async def merge_changes(
+        pull_request: Annotated[int, Field(description="The pull request number merge_preview showed")],
+        head: Annotated[str, Field(description="The head commit merge_preview showed")],
+        counts: Annotated[str, Field(description='The counts merge_preview showed, like "memory 6, rules 3, skills 4, code 1"')],
+    ) -> str:
+        """Merge the open changes into main now, so every Claude has them within a minute. Call it only after he said
+        "merge my changes" about what you just showed him with merge_preview, passing that preview's pull request number,
+        head and counts. It refuses when a required check isn't green, or when dev moved since the preview (show it
+        again). His app asks him to allow this call and shows what merges first."""
+        return await _call("merge", {"pull_request": pull_request, "head": head, "counts": counts}, MERGE_TIMEOUT_S)
 
     @mcp.tool(annotations={"readOnlyHint": False, "destructiveHint": False, "openWorldHint": False})
     async def drop_change(

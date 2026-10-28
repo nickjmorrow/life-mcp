@@ -75,7 +75,12 @@ def test_each_tool_runs_its_own_sub_command(fake_command, client):
     call(client, "change_preview", path="RULES.md", new="x")
     call(client, "ship_it", path="RULES.md", new="x", title="T", diff_hash="abc")
     call(client, "drop_change", commit="1234abc", change="a rule", reason="too long")
-    assert [s["argv"][-1] for s in fake_command.sent()] == ["preview", "ship", "drop"]
+    call(client, "merge_preview")
+    call(client, "merge_changes", pull_request=37, head="2a72cc0a", counts="memory 6, rules 3, skills 4, code 1")
+    assert [s["argv"][-1] for s in fake_command.sent()] == ["preview", "ship", "drop", "digest", "merge"]
+    assert json.loads(fake_command.sent()[3]["stdin"]) == {}
+    assert json.loads(fake_command.sent()[4]["stdin"]) == {"pull_request": 37, "head": "2a72cc0a",
+                                                            "counts": "memory 6, rules 3, skills 4, code 1"}
     assert json.loads(fake_command.sent()[2]["stdin"]) == {"commit": "1234abc", "change": "a rule", "reason": "too long"}
 
 
@@ -124,7 +129,7 @@ def test_a_timeout_says_it_may_have_happened(fake_command, client, monkeypatch):
 
 
 def test_ship_waits_longer_than_the_others():
-    assert changes_mcp.SHIP_TIMEOUT_S >= 660 > changes_mcp.TIMEOUT_S
+    assert changes_mcp.SHIP_TIMEOUT_S >= 660 > changes_mcp.MERGE_TIMEOUT_S >= 180 > changes_mcp.TIMEOUT_S
 
 
 def test_ship_it_annotations(client):
@@ -134,9 +139,13 @@ def test_ship_it_annotations(client):
     tools = asyncio.run(go())
     ship = tools["ship_it"].annotations
     assert ship.destructiveHint is True and ship.openWorldHint is True and ship.readOnlyHint is False
-    assert set(tools) == {"rule_edit", "change_preview", "ship_it", "drop_change"}
+    assert set(tools) == {"rule_edit", "change_preview", "ship_it", "merge_preview", "merge_changes", "drop_change"}
     assert tools["change_preview"].annotations.readOnlyHint is True
     assert "ship it" in tools["ship_it"].description and "change_preview" in tools["ship_it"].description
+    merge = tools["merge_changes"].annotations
+    assert merge.destructiveHint is True and merge.openWorldHint is True and merge.readOnlyHint is False
+    assert tools["merge_preview"].annotations.readOnlyHint is True
+    assert "merge my changes" in tools["merge_changes"].description and "merge_preview" in tools["merge_changes"].description
 
 
 def test_no_memory_propose_or_rule_propose(client):
