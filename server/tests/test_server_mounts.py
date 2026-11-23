@@ -23,6 +23,7 @@ EXPECTED = {
     "reminders": {"reminders_add", "reminders_list_lists"},
     "hevy": {"hevy_api"},
     "hoard": {"hoard_library", "hoard_add", "hoard_set", "hoard_suggest"},
+    "cauldron": {"cauldron_shopping_list", "cauldron_shopping_add", "cauldron_shopping_set", "cauldron_shopping_remove"},
     "forge": {"forge_list_exercises", "forge_put_routine", "forge_undo_claude"},
     "music": {"music_play", "music_now_playing", "music_set_volume"},
     "music_library": {"music_recent", "music_taste", "music_status"},

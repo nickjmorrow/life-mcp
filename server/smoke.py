@@ -24,6 +24,7 @@ CHECKS = {
     "hevy": ("hevy_api", {"method": "GET", "path": "/v1/workouts/count"}),
     "forge": ("forge_list_routines", {}),
     "hoard": ("hoard_library", {"status": "want"}),
+    "cauldron": ("cauldron_shopping_list", {}),
     "music": ("music_list_speakers", {}),
     "music_library": ("music_status", {}),
     "tv": ("tv_status", {}),
