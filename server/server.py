@@ -151,7 +151,7 @@ GROUPS: tuple[Group, ...] = (
                        " (pageIds w-…) and a title gets a Grimoire page once he starts or finishes it."),
     Group("cauldron", "cauldron_mcp", "cauldron",
           instructions=" The cauldron_shopping_* tools are his grocery list, in his Cauldron app; it finds each"
-                       " item's aisle itself."),
+                       " item's aisle itself. The cauldron_recipe_* tools are his recipes, kept in the same app."),
     Group("music", "music_mcp",
           instructions=" The music_* tools play his Apple Music library on AirPlay speakers (HomePods, the"
                        " Apple TV) and control whatever they're playing."),
