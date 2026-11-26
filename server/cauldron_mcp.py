@@ -1,6 +1,7 @@
 """cauldron_*: the shopping list and the recipes in Cauldron (the diet planner), through its JSON API on the same Mac.
 
 Cauldron places each new item in a store aisle by itself, so these tools never set up aisle sections. A recipe is
+how one of Cauldron's meals is cooked: its id and name are the meal's. A recipe is
 always saved whole (Cauldron has no partial update), so recipe_append reads it, adds to one section and saves it
 back. There is no tool that deletes a recipe.
 CAULDRON_URL sets where it listens (default http://127.0.0.1:3100). server.py mounts this server (namespace "cauldron").
@@ -19,9 +20,9 @@ TIMEOUT_S = 30
 # What a list row keeps: enough to read the list back and change an item (no photo or lookup state).
 ITEM_KEYS = ("id", "name", "qty", "note")
 # What a recipe list row keeps: enough to pick a recipe; cauldron_recipe_get has the rest.
-RECIPE_ROW_KEYS = ("id", "name", "summary", "tags", "meals")
+RECIPE_ROW_KEYS = ("id", "name", "summary", "tags", "typical")
 # What Cauldron takes when a recipe is saved (what it returns, without id and typical).
-RECIPE_KEYS = ("name", "summary", "serves", "activeTime", "totalTime", "tags", "ingredients", "sections", "meals")
+RECIPE_KEYS = ("name", "summary", "serves", "activeTime", "totalTime", "tags", "ingredients", "sections")
 
 mcp = FastMCP("Cauldron")
 
@@ -134,18 +135,16 @@ def _recipe_row(recipe: dict) -> dict:
 
 
 def _saved(answer: dict) -> dict:
-    """What a save tool returns: Cauldron's {recipe, unknownMeals}, cut to the recipe's id, name and section titles."""
+    """What a save tool returns: Cauldron's {recipe}, cut to the recipe's id, name and section titles."""
     recipe = answer["recipe"]
-    out = {"id": recipe["id"], "name": recipe["name"], "sections": [s["title"] for s in recipe["sections"]]}
-    if answer.get("unknownMeals"):
-        out["unknown_meals"] = answer["unknownMeals"]
-    return out
+    return {"id": recipe["id"], "name": recipe["name"], "sections": [s["title"] for s in recipe["sections"]]}
 
 
 @mcp.tool(annotations={"readOnlyHint": True, "openWorldHint": False})
 async def recipe_list() -> str:
-    """His recipes, by name: Cauldron holds every recipe he cooks from. Returns {recipes: [{id, name, summary, tags,
-    meals}]}; meals are the diet-plan meals a recipe belongs to. Read one whole with cauldron_recipe_get."""
+    """His recipes, by name: Cauldron holds every recipe he cooks from, each as part of a meal (the id and name are
+    the meal's). Returns {recipes: [{id, name, summary, tags, typical}]}; typical: the meal is in his typical day.
+    Read one whole with cauldron_recipe_get."""
     data = await request("GET", "/api/recipes")
     return _dump({"recipes": [_recipe_row(r) for r in data["recipes"]]})
 
@@ -155,9 +154,9 @@ async def recipe_get(
     id: Annotated[int, Field(ge=1, description="The recipe's id from cauldron_recipe_list")],
 ) -> str:
     """One recipe, whole: {id, name, summary, serves, activeTime, totalTime, tags, ingredients: [{group, text, buy}],
-    sections: [{title, body}], meals, typical}. An ingredient's text is the line as written, buy is what goes on a
+    sections: [{title, body}], typical}. An ingredient's text is the line as written, buy is what goes on a
     shopping list for it ("" when nothing is bought, several names split by ";"), group is its sub-list heading.
-    A section's body is Markdown bullets, nested by two spaces. typical: one of its meals is in his typical day."""
+    A section's body is Markdown bullets, nested by two spaces. typical: the meal is in his typical day."""
     return _dump(await request("GET", f"/api/recipes/{id}"))
 
 
@@ -178,13 +177,12 @@ async def recipe_save(
     active_time: Annotated[str | None, Field(description="Free text, e.g. ~25 min")] = None,
     total_time: Annotated[str | None, Field(description="Free text, e.g. 2 hr + overnight")] = None,
     tags: Annotated[list[str] | None, Field(description="e.g. [\"dinner\", \"chicken\"]")] = None,
-    meals: Annotated[list[str] | None, Field(description="Names of the diet-plan meals it belongs to; names "
-                                                         "Cauldron doesn't know come back in unknown_meals")] = None,
 ) -> str:
-    """Save a whole recipe in Cauldron. Without id it adds a new recipe, and refuses when one of that name exists.
-    With id it replaces that recipe entirely (and may rename it): anything you leave out is cleared, so read it with
-    cauldron_recipe_get first and send everything back, changed where needed. To add to one section (a log entry
-    after cooking), use cauldron_recipe_append instead. Returns {id, name, sections: [titles], unknown_meals}."""
+    """Save a whole recipe in Cauldron. Without id it adds a new recipe (onto the meal of that name when there is
+    one, else as a new meal he cooks now and then), and refuses when a recipe of that name exists. With id it replaces that meal's recipe entirely (and may rename the
+    meal): anything you leave out is cleared, so read it with cauldron_recipe_get first and send everything back,
+    changed where needed. To add to one section (a log entry after cooking), use cauldron_recipe_append instead.
+    Returns {id, name, sections: [titles]}."""
     name = name.strip()
     if not name:
         raise ToolError("name must not be empty.")
@@ -198,7 +196,7 @@ async def recipe_save(
                                 "to replace it, or use another name.")
     body: dict[str, Any] = {"name": name, "ingredients": ingredients, "sections": sections}
     for key, value in (("summary", summary), ("serves", serves), ("activeTime", active_time),
-                       ("totalTime", total_time), ("tags", tags), ("meals", meals)):
+                       ("totalTime", total_time), ("tags", tags)):
         if value is not None:
             body[key] = value
     if id is None:

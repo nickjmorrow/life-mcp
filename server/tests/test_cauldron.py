@@ -103,15 +103,15 @@ def test_remove_deletes_the_item(calls):
 
 
 SOUP = {"id": 4, "name": "Lentil soup", "summary": "Red lentils, one pot.", "serves": "4", "activeTime": "~15 min",
-        "totalTime": "40 min", "tags": ["dinner", "soup"], "meals": ["Soup night"], "typical": True,
+        "totalTime": "40 min", "tags": ["dinner", "soup"], "typical": True,
         "ingredients": [{"group": "", "text": "1 cup red lentils", "buy": "red lentils"},
                         {"group": "", "text": "4 cups water", "buy": ""}],
         "sections": [{"title": "instructions", "body": "- **1. Simmer.** **25 min**"},
                      {"title": "log", "body": "- 2026-01-05: a little thin"},
                      {"title": "notes", "body": ""}]}
 SOUP_ROW = {"id": 4, "name": "Lentil soup", "summary": "Red lentils, one pot.", "tags": ["dinner", "soup"],
-            "typical": True, "meals": ["Soup night"]}
-TOAST_ROW = {"id": 6, "name": "Toast", "summary": "", "tags": [], "typical": False, "meals": []}
+            "typical": True}
+TOAST_ROW = {"id": 6, "name": "Toast", "summary": "", "tags": [], "typical": False}
 RECIPES = {"recipes": [SOUP_ROW, TOAST_ROW]}
 SOUP_TITLES = ["instructions", "log", "notes"]
 NEW_LINES = [{"text": "2 slices bread", "buy": "bread"}]
@@ -122,8 +122,8 @@ def test_recipe_list_is_trimmed(calls):
     calls.answers[("GET", "/api/recipes")] = RECIPES
     assert call("recipe_list") == {"recipes": [
         {"id": 4, "name": "Lentil soup", "summary": "Red lentils, one pot.", "tags": ["dinner", "soup"],
-         "meals": ["Soup night"]},
-        {"id": 6, "name": "Toast"}]}
+         "typical": True},
+        {"id": 6, "name": "Toast", "typical": False}]}
     assert calls == [("GET", "/api/recipes", None)]
 
 
@@ -138,13 +138,13 @@ def test_recipe_get_returns_it_whole(calls):
 def test_recipe_save_adds_a_new_recipe(calls):
     calls.answers[("GET", "/api/recipes")] = RECIPES
     calls.answers[("POST", "/api/recipes")] = {
-        "recipe": {**SOUP, "id": 9, "name": "Garlic bread", "sections": NEW_SECTIONS}, "unknownMeals": ["Brunch"]}
+        "recipe": {**SOUP, "id": 9, "name": "Garlic bread", "sections": NEW_SECTIONS}}
     out = call("recipe_save", name=" Garlic bread ", ingredients=NEW_LINES, sections=NEW_SECTIONS, serves="2",
-               active_time="5 min", total_time="10 min", tags=["side"], meals=["Brunch"])
+               active_time="5 min", total_time="10 min", tags=["side"])
     assert calls == [("GET", "/api/recipes", None), ("POST", "/api/recipes", {
         "name": "Garlic bread", "ingredients": NEW_LINES, "sections": NEW_SECTIONS, "serves": "2",
-        "activeTime": "5 min", "totalTime": "10 min", "tags": ["side"], "meals": ["Brunch"]})]
-    assert out == {"id": 9, "name": "Garlic bread", "sections": ["instructions"], "unknown_meals": ["Brunch"]}
+        "activeTime": "5 min", "totalTime": "10 min", "tags": ["side"]})]
+    assert out == {"id": 9, "name": "Garlic bread", "sections": ["instructions"]}
 
 
 def test_recipe_save_without_an_id_never_replaces(calls):
@@ -155,7 +155,7 @@ def test_recipe_save_without_an_id_never_replaces(calls):
 
 
 def test_recipe_save_with_an_id_replaces_that_recipe(calls):
-    calls.answers[("PUT", "/api/recipes/4")] = {"recipe": SOUP, "unknownMeals": []}
+    calls.answers[("PUT", "/api/recipes/4")] = {"recipe": SOUP}
     out = call("recipe_save", id=4, name="Lentil soup", ingredients=SOUP["ingredients"], sections=SOUP["sections"])
     assert calls == [("PUT", "/api/recipes/4", {"name": "Lentil soup", "ingredients": SOUP["ingredients"],
                                                 "sections": SOUP["sections"]})]
@@ -176,7 +176,7 @@ def test_recipe_append_adds_to_the_section_and_keeps_the_rest(calls):
     appended = "- 2026-02-01: 30 min, thicker\n  - used less water"
     sections = [SOUP["sections"][0], {"title": "log", "body": "- 2026-01-05: a little thin\n" + appended},
                 SOUP["sections"][2]]
-    calls.answers[("PUT", "/api/recipes/4")] = {"recipe": {**SOUP, "sections": sections}, "unknownMeals": []}
+    calls.answers[("PUT", "/api/recipes/4")] = {"recipe": {**SOUP, "sections": sections}}
     out = call("recipe_append", id=4, section=" Log ", text=appended + "\n")
     sent = {k: v for k, v in SOUP.items() if k not in ("id", "typical")} | {"sections": sections}
     assert calls == [("GET", "/api/recipes/4", None), ("PUT", "/api/recipes/4", sent)]
@@ -185,7 +185,7 @@ def test_recipe_append_adds_to_the_section_and_keeps_the_rest(calls):
 
 def test_recipe_append_fills_an_empty_section_without_a_blank_line(calls):
     calls.answers[("GET", "/api/recipes/4")] = SOUP
-    calls.answers[("PUT", "/api/recipes/4")] = {"recipe": SOUP, "unknownMeals": []}
+    calls.answers[("PUT", "/api/recipes/4")] = {"recipe": SOUP}
     call("recipe_append", id=4, section="notes", text="- note A")
     assert calls[-1][2]["sections"][2] == {"title": "notes", "body": "- note A"}
 
@@ -193,7 +193,7 @@ def test_recipe_append_fills_an_empty_section_without_a_blank_line(calls):
 def test_recipe_append_adds_a_section_the_recipe_lacks(calls):
     calls.answers[("GET", "/api/recipes/4")] = SOUP
     sections = SOUP["sections"] + [{"title": "troubleshooting", "body": "- thin: simmer longer"}]
-    calls.answers[("PUT", "/api/recipes/4")] = {"recipe": {**SOUP, "sections": sections}, "unknownMeals": []}
+    calls.answers[("PUT", "/api/recipes/4")] = {"recipe": {**SOUP, "sections": sections}}
     out = call("recipe_append", id=4, section="troubleshooting", text="- thin: simmer longer")
     assert calls[-1][2]["sections"] == sections
     assert out["created"] is True and out["sections"] == SOUP_TITLES + ["troubleshooting"]
